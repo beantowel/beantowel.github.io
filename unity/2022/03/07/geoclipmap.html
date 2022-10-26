@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.6.1 -->
+<title>[unity] 实现大地形渲染之 geometry clipmap | The Lost Fridge’s blog</title>
+<meta name="generator" content="Jekyll v4.1.1" />
+<meta property="og:title" content="[unity] 实现大地形渲染之 geometry clipmap" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="最近希望在unity中实现一个简单的geometry clipmap，用于飞行模拟游戏中巨大地形的渲染。但是网上冲浪之后发现资料有点少，只好一点点从头做起。那么就用本文记录一些个人比较迷惑的地方，作为我的备忘录和经验分享吧。 目前没有完全实现，但是看了下效果确实有点差，不加其他功能的话基本用不了。虽然没有做过性能测试，但是感觉很多为了效率做的细节其实没必要完全照着论文去做，有些在unity也不好实现。最近看到了这个视频：06.游戏中地形大气和云的渲染(上) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili，发现geometry clipmap其实最有指导意义的就是： 分层LOD+相机坐标系渲染（我最开始想解决的问题） 资源流式加载（原始论文其实没怎么提，不过从贴图的循环更新ToroidalOrigin能看出来） 看完视频暂时不想搞这个闭门造车了，查查virtual texture去，这样就不用自己做流式加载啦：）。 参考资料：GPU Gems 2, geometry clipmap 原始论文 算法整体框架 从论文中可以清晰得知，算法需要三个步骤：计算active region（我们希望渲染的地形范围）；更新geometry clipmap（多级地形纹理/贴图）；裁剪渲染范围至贴图范围，并进行渲染。 代码解读 Upsample（上采样） 算法通过对较粗糙的高度图纹理进行插值来获取分辨率更高（一级）的高度图。 不过在gpu gems提供的示例代码中，为了实现不同类型坐标的插值计算，这个算法写的比较绕，它的pixel shader是这样的： float4 UpsamplePS(float2 p_uv : TEXCOORD0) : COLOR { float residual = tex2D(ResidualSampler, p_uv*OneOverSize); p_uv = floor(p_uv); float2 p_uv_div2 = p_uv/2; float2 lookup_tij = p_uv_div2+1; float4 maskType = tex2D(LookupSampler, lookup_tij); matrix maskMatrix[4]; maskMatrix[0] = matrix(0, 0, 0, 0, 0, -1.0f/16.0f, 0, 0, 0, 0, 0, 0, 1.0f/256.0f, -9.0f/256.0f, -9.0f/256.0f, 1.0f/256.0f); maskMatrix[1] = matrix(0, 1, 0, 0, 0, 9.0f/16.0f, 0, 0, -1.0f/16.0f, 9.0f/16.0f, 9.0f/16.0f, -1.0f/16.0f, -9.0f/256.0f, 81.0f/256.0f, 81.0f/256.0f, -9.0f/256.0f); maskMatrix[2] = matrix(0, 0, 0, 0, 0, 9.0f/16.0f, 0, 0, 0, 0, 0, 0, -9.0f/256.0f, 81.0f/256.0f, 81.0f/256.0f, -9.0f/256.0f); maskMatrix[3] = matrix(0, 0, 0, 0, 0, -1.0f/16.0f, 0, 0, 0, 0, 0, 0, 1.0f/256.0f, -9.0f/256.0f, -9.0f/256.0f, 1.0f/256.0f); float2 offset = float2(dot(maskType.bgra, float4(1, 1.5, 1, 1.5)), dot(maskType.bgra, float4(1, 1, 1.5, 1.5))); float z_predicted=0; offset = (p_uv_div2-offset+0.5)*OneOverSize+TextureOffset; for(int i = 0; i &lt; 4; i++) { float zrowv[4]; for (int j = 0; j &lt; 4; j++) { float2 vij = offset+float2(i,j)*OneOverSize; zrowv[j] = tex2D(CoarseLevelElevationSampler, vij); } vector mask = mul(maskType.bgra, maskMatrix[i]); vector zrow = vector(zrowv[0], zrowv[1], zrowv[2], zrowv[3]); zrow = floor(zrow); z_predicted = z_predicted+dot(zrow, mask); } z_predicted = floor(z_predicted); // add the residual to get the actual elevation float zf = z_predicted + residual; // zf should always be an integer, since it gets packed // into the integer component of the floating-point texture zf = floor(zf); float4 uvc = floor(float4((p_uv_div2+float2(0.5f,0)), (p_uv_div2+float2(0,0.5f))))*OneOverSize+TextureOffset.xyxy; // look up the z_predicted value in the coarser levels float zc0 = floor(tex2D(CoarseLevelElevationSampler, float4(uvc.xy, 0, 1))); float zc1 = floor(tex2D(CoarseLevelElevationSampler, float4(uvc.zw, 0, 1))); float zf_zd = zf + ((zc0+zc1)/2-zf+256)/512; return float4(zf_zd, 0, 0, 0); } 这个LookupSampler（texture）和maskMatrix比较魔法，在此分析一下。 我们在上采样时要从粗糙lv0的高度图（方框）插值计算出更精确一级lv1的高度图（圆圈），它们之间的关系如图所示。为了方便起见，假设我们的uv坐标是一个单位对应一像素（注意在lv0中坐标细分为0.5），那么lv1在lv0中的坐标有4种类型： 和上一级重合：（0，0） 在两个像素中央：（0，0.5)，（0.5，0） 在四个像素中央：（0.5，0.5） 那么通过权重为（-1/16, 9/16, 9/16, -1/16）的四点法插值 这四种类型的坐标的计算方式分别需要1、4、4、16个点的数据，如下图不同颜色的方框所示。 比较直观的插值公式如右侧的矩阵所示，直接对最大范围的16点数据与权重（方便起见省去了分母 /256）进行点乘即可。但是因为gpu不便处理分支语句，gpu gems里使用循环+额外的一张2*2控制纹理来实现算法，这些权重矩阵则被拆散进了maskMatrix中（如左侧所示）。比如右侧矩阵1的第一行在左侧矩阵4的第一行（这里为了和图片对应，行坐标颠倒了），而其第二行则在左侧矩阵3的第一行，第三行在左侧矩阵2的第一行......依次类推。控制纹理中则简单地记录了4个one-hot向量： 后来我发现这里好像搞反了行坐标和列坐标，不过大概意思大家能看懂就行了 (1,0,0,0)：对应坐标类型（0，0） (0,1,0,0)：对应坐标类型（0，0.5） (0,0,1,0)：对应坐标类型（0.5， 0） (0,0,0,1)：对应坐标类型（0.5，0.5） 另外两个shader，ComputeNormal（法线计算）和 Render（渲染）相对比较简单，没有什么需要专门分析的地方，看gpu gems基本就行了。 分级网格 原始论文中对网格的的实现搞了很多花活，其实我不太懂，大部分情况应该都是为了节省顶点的开销，尽量复用子结构。比较重要的点应该在于网格并不是正好一级级“嵌套”起来的，层级之间存在一小片可以调整的区域，这样内层网格可以随着地图加载中心点的变化进行一点点平移，而外层则不用移动。需要注意为了防止插值造成的波浪状效果，mesh网格是“吸附”到地图坐标网格上的，也就是说纹理贴图只能进行一格格的平移，正好也对应了这个调整范围。 我在测试的时候直接奢侈一把，网格全部老老实实画出来完事，不做顶点复用。这里输出一下边缘过渡区的alpha值来展示一下分级的网格结构： 流式加载 咕了 一些改动 Occlusion（遮挡） gpu gems提供的代码仅用法线计算光照强度（Lambertian reflectance），已经可以获得非常明显的明暗效果，让地形有了立体感；但是在起伏的山丘地形上，明显能发现怪怪的，是因为没有临近地形的遮挡效果。考虑单个平行光源（太阳）的情况，在每一个位置，我们可以根据光线方向作一条射线判断是否与地形相交来确定该位置是否会被遮挡，计算出额外的一张遮挡贴图，在最终的render里与输出相乘，类似这样就可以了： OUTPUT OcclusionVS(appdata v) { OUTPUT output; output.position = float4(float2(v.vertex.x,v.vertex.y),0.0,1.0); output.position = UnityObjectToClipPos(v.vertex); output.texcoords = v.uv*Size; return output; } float4 OcclusionPS(OUTPUT input) : SV_Target { float2 p_uv_div2 = floor(input.texcoords)/2; float2 uv = (p_uv_div2 + 0.5)*OneOverSize + TextureOffset; float height = coarseHeight.Sample(linear_repeat_sampler, uv).x; float occlusion = 1; for(int i = 1; i &lt; 30; i++) { float dis = i / 2.0; float2 uv = (p_uv_div2 + dis * LightDirection + 0.5)*OneOverSize + TextureOffset; float h = coarseHeight.Sample(linear_repeat_sampler, uv).x; occlusion += clamp(sign(height + dis * ScaleFac - h), -1, 0) * 0.2; } return float4(clamp(occlusion, 0, 1), 0, 0, 0); } 调试中遇到的问题 因为基本没怎么写过shader，中间碰到了一些问题解决了好久。一个碰到好多次的问题就是，纹理中会出现一些横竖的条纹，这个原因99%就是采样的问题。第一次是因为没有关闭纹理的mipmap，而我的贴图又是一个长方形的尺寸，导致短边上被开启了降采样，出现了好多暗纹。第二次是因为纹理使用了“点采样”，也就是不进行插值，但是在计算uv坐标的时候使用了a+b的形式，其中b是能刚好落在贴图网格上的，但是a忘了做好取整的操作，导致某些地方的采样点重合了，出现了横竖的条纹。" />
+<meta property="og:description" content="最近希望在unity中实现一个简单的geometry clipmap，用于飞行模拟游戏中巨大地形的渲染。但是网上冲浪之后发现资料有点少，只好一点点从头做起。那么就用本文记录一些个人比较迷惑的地方，作为我的备忘录和经验分享吧。 目前没有完全实现，但是看了下效果确实有点差，不加其他功能的话基本用不了。虽然没有做过性能测试，但是感觉很多为了效率做的细节其实没必要完全照着论文去做，有些在unity也不好实现。最近看到了这个视频：06.游戏中地形大气和云的渲染(上) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili，发现geometry clipmap其实最有指导意义的就是： 分层LOD+相机坐标系渲染（我最开始想解决的问题） 资源流式加载（原始论文其实没怎么提，不过从贴图的循环更新ToroidalOrigin能看出来） 看完视频暂时不想搞这个闭门造车了，查查virtual texture去，这样就不用自己做流式加载啦：）。 参考资料：GPU Gems 2, geometry clipmap 原始论文 算法整体框架 从论文中可以清晰得知，算法需要三个步骤：计算active region（我们希望渲染的地形范围）；更新geometry clipmap（多级地形纹理/贴图）；裁剪渲染范围至贴图范围，并进行渲染。 代码解读 Upsample（上采样） 算法通过对较粗糙的高度图纹理进行插值来获取分辨率更高（一级）的高度图。 不过在gpu gems提供的示例代码中，为了实现不同类型坐标的插值计算，这个算法写的比较绕，它的pixel shader是这样的： float4 UpsamplePS(float2 p_uv : TEXCOORD0) : COLOR { float residual = tex2D(ResidualSampler, p_uv*OneOverSize); p_uv = floor(p_uv); float2 p_uv_div2 = p_uv/2; float2 lookup_tij = p_uv_div2+1; float4 maskType = tex2D(LookupSampler, lookup_tij); matrix maskMatrix[4]; maskMatrix[0] = matrix(0, 0, 0, 0, 0, -1.0f/16.0f, 0, 0, 0, 0, 0, 0, 1.0f/256.0f, -9.0f/256.0f, -9.0f/256.0f, 1.0f/256.0f); maskMatrix[1] = matrix(0, 1, 0, 0, 0, 9.0f/16.0f, 0, 0, -1.0f/16.0f, 9.0f/16.0f, 9.0f/16.0f, -1.0f/16.0f, -9.0f/256.0f, 81.0f/256.0f, 81.0f/256.0f, -9.0f/256.0f); maskMatrix[2] = matrix(0, 0, 0, 0, 0, 9.0f/16.0f, 0, 0, 0, 0, 0, 0, -9.0f/256.0f, 81.0f/256.0f, 81.0f/256.0f, -9.0f/256.0f); maskMatrix[3] = matrix(0, 0, 0, 0, 0, -1.0f/16.0f, 0, 0, 0, 0, 0, 0, 1.0f/256.0f, -9.0f/256.0f, -9.0f/256.0f, 1.0f/256.0f); float2 offset = float2(dot(maskType.bgra, float4(1, 1.5, 1, 1.5)), dot(maskType.bgra, float4(1, 1, 1.5, 1.5))); float z_predicted=0; offset = (p_uv_div2-offset+0.5)*OneOverSize+TextureOffset; for(int i = 0; i &lt; 4; i++) { float zrowv[4]; for (int j = 0; j &lt; 4; j++) { float2 vij = offset+float2(i,j)*OneOverSize; zrowv[j] = tex2D(CoarseLevelElevationSampler, vij); } vector mask = mul(maskType.bgra, maskMatrix[i]); vector zrow = vector(zrowv[0], zrowv[1], zrowv[2], zrowv[3]); zrow = floor(zrow); z_predicted = z_predicted+dot(zrow, mask); } z_predicted = floor(z_predicted); // add the residual to get the actual elevation float zf = z_predicted + residual; // zf should always be an integer, since it gets packed // into the integer component of the floating-point texture zf = floor(zf); float4 uvc = floor(float4((p_uv_div2+float2(0.5f,0)), (p_uv_div2+float2(0,0.5f))))*OneOverSize+TextureOffset.xyxy; // look up the z_predicted value in the coarser levels float zc0 = floor(tex2D(CoarseLevelElevationSampler, float4(uvc.xy, 0, 1))); float zc1 = floor(tex2D(CoarseLevelElevationSampler, float4(uvc.zw, 0, 1))); float zf_zd = zf + ((zc0+zc1)/2-zf+256)/512; return float4(zf_zd, 0, 0, 0); } 这个LookupSampler（texture）和maskMatrix比较魔法，在此分析一下。 我们在上采样时要从粗糙lv0的高度图（方框）插值计算出更精确一级lv1的高度图（圆圈），它们之间的关系如图所示。为了方便起见，假设我们的uv坐标是一个单位对应一像素（注意在lv0中坐标细分为0.5），那么lv1在lv0中的坐标有4种类型： 和上一级重合：（0，0） 在两个像素中央：（0，0.5)，（0.5，0） 在四个像素中央：（0.5，0.5） 那么通过权重为（-1/16, 9/16, 9/16, -1/16）的四点法插值 这四种类型的坐标的计算方式分别需要1、4、4、16个点的数据，如下图不同颜色的方框所示。 比较直观的插值公式如右侧的矩阵所示，直接对最大范围的16点数据与权重（方便起见省去了分母 /256）进行点乘即可。但是因为gpu不便处理分支语句，gpu gems里使用循环+额外的一张2*2控制纹理来实现算法，这些权重矩阵则被拆散进了maskMatrix中（如左侧所示）。比如右侧矩阵1的第一行在左侧矩阵4的第一行（这里为了和图片对应，行坐标颠倒了），而其第二行则在左侧矩阵3的第一行，第三行在左侧矩阵2的第一行......依次类推。控制纹理中则简单地记录了4个one-hot向量： 后来我发现这里好像搞反了行坐标和列坐标，不过大概意思大家能看懂就行了 (1,0,0,0)：对应坐标类型（0，0） (0,1,0,0)：对应坐标类型（0，0.5） (0,0,1,0)：对应坐标类型（0.5， 0） (0,0,0,1)：对应坐标类型（0.5，0.5） 另外两个shader，ComputeNormal（法线计算）和 Render（渲染）相对比较简单，没有什么需要专门分析的地方，看gpu gems基本就行了。 分级网格 原始论文中对网格的的实现搞了很多花活，其实我不太懂，大部分情况应该都是为了节省顶点的开销，尽量复用子结构。比较重要的点应该在于网格并不是正好一级级“嵌套”起来的，层级之间存在一小片可以调整的区域，这样内层网格可以随着地图加载中心点的变化进行一点点平移，而外层则不用移动。需要注意为了防止插值造成的波浪状效果，mesh网格是“吸附”到地图坐标网格上的，也就是说纹理贴图只能进行一格格的平移，正好也对应了这个调整范围。 我在测试的时候直接奢侈一把，网格全部老老实实画出来完事，不做顶点复用。这里输出一下边缘过渡区的alpha值来展示一下分级的网格结构： 流式加载 咕了 一些改动 Occlusion（遮挡） gpu gems提供的代码仅用法线计算光照强度（Lambertian reflectance），已经可以获得非常明显的明暗效果，让地形有了立体感；但是在起伏的山丘地形上，明显能发现怪怪的，是因为没有临近地形的遮挡效果。考虑单个平行光源（太阳）的情况，在每一个位置，我们可以根据光线方向作一条射线判断是否与地形相交来确定该位置是否会被遮挡，计算出额外的一张遮挡贴图，在最终的render里与输出相乘，类似这样就可以了： OUTPUT OcclusionVS(appdata v) { OUTPUT output; output.position = float4(float2(v.vertex.x,v.vertex.y),0.0,1.0); output.position = UnityObjectToClipPos(v.vertex); output.texcoords = v.uv*Size; return output; } float4 OcclusionPS(OUTPUT input) : SV_Target { float2 p_uv_div2 = floor(input.texcoords)/2; float2 uv = (p_uv_div2 + 0.5)*OneOverSize + TextureOffset; float height = coarseHeight.Sample(linear_repeat_sampler, uv).x; float occlusion = 1; for(int i = 1; i &lt; 30; i++) { float dis = i / 2.0; float2 uv = (p_uv_div2 + dis * LightDirection + 0.5)*OneOverSize + TextureOffset; float h = coarseHeight.Sample(linear_repeat_sampler, uv).x; occlusion += clamp(sign(height + dis * ScaleFac - h), -1, 0) * 0.2; } return float4(clamp(occlusion, 0, 1), 0, 0, 0); } 调试中遇到的问题 因为基本没怎么写过shader，中间碰到了一些问题解决了好久。一个碰到好多次的问题就是，纹理中会出现一些横竖的条纹，这个原因99%就是采样的问题。第一次是因为没有关闭纹理的mipmap，而我的贴图又是一个长方形的尺寸，导致短边上被开启了降采样，出现了好多暗纹。第二次是因为纹理使用了“点采样”，也就是不进行插值，但是在计算uv坐标的时候使用了a+b的形式，其中b是能刚好落在贴图网格上的，但是a忘了做好取整的操作，导致某些地方的采样点重合了，出现了横竖的条纹。" />
+<link rel="canonical" href="/unity/2022/03/07/geoclipmap.html" />
+<meta property="og:url" content="/unity/2022/03/07/geoclipmap.html" />
+<meta property="og:site_name" content="The Lost Fridge’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2022-03-07T00:41:00+08:00" />
+<script type="application/ld+json">
+{"url":"/unity/2022/03/07/geoclipmap.html","@type":"BlogPosting","description":"最近希望在unity中实现一个简单的geometry clipmap，用于飞行模拟游戏中巨大地形的渲染。但是网上冲浪之后发现资料有点少，只好一点点从头做起。那么就用本文记录一些个人比较迷惑的地方，作为我的备忘录和经验分享吧。 目前没有完全实现，但是看了下效果确实有点差，不加其他功能的话基本用不了。虽然没有做过性能测试，但是感觉很多为了效率做的细节其实没必要完全照着论文去做，有些在unity也不好实现。最近看到了这个视频：06.游戏中地形大气和云的渲染(上) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili，发现geometry clipmap其实最有指导意义的就是： 分层LOD+相机坐标系渲染（我最开始想解决的问题） 资源流式加载（原始论文其实没怎么提，不过从贴图的循环更新ToroidalOrigin能看出来） 看完视频暂时不想搞这个闭门造车了，查查virtual texture去，这样就不用自己做流式加载啦：）。 参考资料：GPU Gems 2, geometry clipmap 原始论文 算法整体框架 从论文中可以清晰得知，算法需要三个步骤：计算active region（我们希望渲染的地形范围）；更新geometry clipmap（多级地形纹理/贴图）；裁剪渲染范围至贴图范围，并进行渲染。 代码解读 Upsample（上采样） 算法通过对较粗糙的高度图纹理进行插值来获取分辨率更高（一级）的高度图。 不过在gpu gems提供的示例代码中，为了实现不同类型坐标的插值计算，这个算法写的比较绕，它的pixel shader是这样的： float4 UpsamplePS(float2 p_uv : TEXCOORD0) : COLOR { float residual = tex2D(ResidualSampler, p_uv*OneOverSize); p_uv = floor(p_uv); float2 p_uv_div2 = p_uv/2; float2 lookup_tij = p_uv_div2+1; float4 maskType = tex2D(LookupSampler, lookup_tij); matrix maskMatrix[4]; maskMatrix[0] = matrix(0, 0, 0, 0, 0, -1.0f/16.0f, 0, 0, 0, 0, 0, 0, 1.0f/256.0f, -9.0f/256.0f, -9.0f/256.0f, 1.0f/256.0f); maskMatrix[1] = matrix(0, 1, 0, 0, 0, 9.0f/16.0f, 0, 0, -1.0f/16.0f, 9.0f/16.0f, 9.0f/16.0f, -1.0f/16.0f, -9.0f/256.0f, 81.0f/256.0f, 81.0f/256.0f, -9.0f/256.0f); maskMatrix[2] = matrix(0, 0, 0, 0, 0, 9.0f/16.0f, 0, 0, 0, 0, 0, 0, -9.0f/256.0f, 81.0f/256.0f, 81.0f/256.0f, -9.0f/256.0f); maskMatrix[3] = matrix(0, 0, 0, 0, 0, -1.0f/16.0f, 0, 0, 0, 0, 0, 0, 1.0f/256.0f, -9.0f/256.0f, -9.0f/256.0f, 1.0f/256.0f); float2 offset = float2(dot(maskType.bgra, float4(1, 1.5, 1, 1.5)), dot(maskType.bgra, float4(1, 1, 1.5, 1.5))); float z_predicted=0; offset = (p_uv_div2-offset+0.5)*OneOverSize+TextureOffset; for(int i = 0; i &lt; 4; i++) { float zrowv[4]; for (int j = 0; j &lt; 4; j++) { float2 vij = offset+float2(i,j)*OneOverSize; zrowv[j] = tex2D(CoarseLevelElevationSampler, vij); } vector mask = mul(maskType.bgra, maskMatrix[i]); vector zrow = vector(zrowv[0], zrowv[1], zrowv[2], zrowv[3]); zrow = floor(zrow); z_predicted = z_predicted+dot(zrow, mask); } z_predicted = floor(z_predicted); // add the residual to get the actual elevation float zf = z_predicted + residual; // zf should always be an integer, since it gets packed // into the integer component of the floating-point texture zf = floor(zf); float4 uvc = floor(float4((p_uv_div2+float2(0.5f,0)), (p_uv_div2+float2(0,0.5f))))*OneOverSize+TextureOffset.xyxy; // look up the z_predicted value in the coarser levels float zc0 = floor(tex2D(CoarseLevelElevationSampler, float4(uvc.xy, 0, 1))); float zc1 = floor(tex2D(CoarseLevelElevationSampler, float4(uvc.zw, 0, 1))); float zf_zd = zf + ((zc0+zc1)/2-zf+256)/512; return float4(zf_zd, 0, 0, 0); } 这个LookupSampler（texture）和maskMatrix比较魔法，在此分析一下。 我们在上采样时要从粗糙lv0的高度图（方框）插值计算出更精确一级lv1的高度图（圆圈），它们之间的关系如图所示。为了方便起见，假设我们的uv坐标是一个单位对应一像素（注意在lv0中坐标细分为0.5），那么lv1在lv0中的坐标有4种类型： 和上一级重合：（0，0） 在两个像素中央：（0，0.5)，（0.5，0） 在四个像素中央：（0.5，0.5） 那么通过权重为（-1/16, 9/16, 9/16, -1/16）的四点法插值 这四种类型的坐标的计算方式分别需要1、4、4、16个点的数据，如下图不同颜色的方框所示。 比较直观的插值公式如右侧的矩阵所示，直接对最大范围的16点数据与权重（方便起见省去了分母 /256）进行点乘即可。但是因为gpu不便处理分支语句，gpu gems里使用循环+额外的一张2*2控制纹理来实现算法，这些权重矩阵则被拆散进了maskMatrix中（如左侧所示）。比如右侧矩阵1的第一行在左侧矩阵4的第一行（这里为了和图片对应，行坐标颠倒了），而其第二行则在左侧矩阵3的第一行，第三行在左侧矩阵2的第一行......依次类推。控制纹理中则简单地记录了4个one-hot向量： 后来我发现这里好像搞反了行坐标和列坐标，不过大概意思大家能看懂就行了 (1,0,0,0)：对应坐标类型（0，0） (0,1,0,0)：对应坐标类型（0，0.5） (0,0,1,0)：对应坐标类型（0.5， 0） (0,0,0,1)：对应坐标类型（0.5，0.5） 另外两个shader，ComputeNormal（法线计算）和 Render（渲染）相对比较简单，没有什么需要专门分析的地方，看gpu gems基本就行了。 分级网格 原始论文中对网格的的实现搞了很多花活，其实我不太懂，大部分情况应该都是为了节省顶点的开销，尽量复用子结构。比较重要的点应该在于网格并不是正好一级级“嵌套”起来的，层级之间存在一小片可以调整的区域，这样内层网格可以随着地图加载中心点的变化进行一点点平移，而外层则不用移动。需要注意为了防止插值造成的波浪状效果，mesh网格是“吸附”到地图坐标网格上的，也就是说纹理贴图只能进行一格格的平移，正好也对应了这个调整范围。 我在测试的时候直接奢侈一把，网格全部老老实实画出来完事，不做顶点复用。这里输出一下边缘过渡区的alpha值来展示一下分级的网格结构： 流式加载 咕了 一些改动 Occlusion（遮挡） gpu gems提供的代码仅用法线计算光照强度（Lambertian reflectance），已经可以获得非常明显的明暗效果，让地形有了立体感；但是在起伏的山丘地形上，明显能发现怪怪的，是因为没有临近地形的遮挡效果。考虑单个平行光源（太阳）的情况，在每一个位置，我们可以根据光线方向作一条射线判断是否与地形相交来确定该位置是否会被遮挡，计算出额外的一张遮挡贴图，在最终的render里与输出相乘，类似这样就可以了： OUTPUT OcclusionVS(appdata v) { OUTPUT output; output.position = float4(float2(v.vertex.x,v.vertex.y),0.0,1.0); output.position = UnityObjectToClipPos(v.vertex); output.texcoords = v.uv*Size; return output; } float4 OcclusionPS(OUTPUT input) : SV_Target { float2 p_uv_div2 = floor(input.texcoords)/2; float2 uv = (p_uv_div2 + 0.5)*OneOverSize + TextureOffset; float height = coarseHeight.Sample(linear_repeat_sampler, uv).x; float occlusion = 1; for(int i = 1; i &lt; 30; i++) { float dis = i / 2.0; float2 uv = (p_uv_div2 + dis * LightDirection + 0.5)*OneOverSize + TextureOffset; float h = coarseHeight.Sample(linear_repeat_sampler, uv).x; occlusion += clamp(sign(height + dis * ScaleFac - h), -1, 0) * 0.2; } return float4(clamp(occlusion, 0, 1), 0, 0, 0); } 调试中遇到的问题 因为基本没怎么写过shader，中间碰到了一些问题解决了好久。一个碰到好多次的问题就是，纹理中会出现一些横竖的条纹，这个原因99%就是采样的问题。第一次是因为没有关闭纹理的mipmap，而我的贴图又是一个长方形的尺寸，导致短边上被开启了降采样，出现了好多暗纹。第二次是因为纹理使用了“点采样”，也就是不进行插值，但是在计算uv坐标的时候使用了a+b的形式，其中b是能刚好落在贴图网格上的，但是a忘了做好取整的操作，导致某些地方的采样点重合了，出现了横竖的条纹。","headline":"[unity] 实现大地形渲染之 geometry clipmap","dateModified":"2022-03-07T00:41:00+08:00","datePublished":"2022-03-07T00:41:00+08:00","mainEntityOfPage":{"@type":"WebPage","@id":"/unity/2022/03/07/geoclipmap.html"},"@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="The Lost Fridge&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">The Lost Fridge&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+    <header class="post-header">
+        <h1 class="post-title p-name" itemprop="name headline">[unity] 实现大地形渲染之 geometry clipmap</h1>
+        <p class="post-meta">
+            <time class="dt-published" datetime="2022-03-07T00:41:00+08:00" itemprop="datePublished">Mar 7, 2022
+            </time></p>
+    </header>
+
+    <!-- <h2>目录</h2> -->
+    <ul><li>算法整体框架</li><li>代码解读<ul><li>Upsample（上采样）</li><li>分级网格</li><li>流式加载</li></ul></li><li>一些改动<ul><li>Occlusion（遮挡）</li></ul></li><li>调试中遇到的问题</li></ul>
+    <div class="post-content e-content" itemprop="articleBody">
+        <p data-first-child="" data-pid="gz5zWSbi">最近希望在unity中实现一个简单的geometry clipmap，用于飞行模拟游戏中巨大地形的渲染。但是网上冲浪之后发现资料有点少，只好一点点从头做起。那么就用本文记录一些个人比较迷惑的地方，作为我的备忘录和经验分享吧。</p>
+
+<p data-pid="t3Ir7lca">目前没有完全实现，但是看了下效果确实有点差，不加其他功能的话基本用不了。虽然没有做过性能测试，但是感觉很多为了效率做的细节其实没必要完全照着论文去做，有些在unity也不好实现。最近看到了这个视频：<a href="https://link.zhihu.com/?target=https%3A//www.bilibili.com/video/BV1au411y7Fq%3Fspm_id_from%3D333.999.0.0" class=" wrap external" target="_blank" rel="nofollow noreferrer">06.游戏中地形大气和云的渲染(上) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili</a>，发现geometry clipmap其实最有指导意义的就是：</p>
+
+<ul>
+<li data-pid="Xic5Z26N">分层LOD+相机坐标系渲染（我最开始想解决的问题）</li>
+<li data-pid="k4eV76YG">资源流式加载（原始论文其实没怎么提，不过从贴图的循环更新ToroidalOrigin能看出来）</li>
+</ul>
+
+<p data-pid="M-PA-uml">看完视频暂时不想搞这个闭门造车了，查查virtual texture去，这样就不用自己做流式加载啦：）。</p>
+
+<p data-pid="LIYwd8rA">参考资料：<a href="https://link.zhihu.com/?target=https%3A//developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-2-terrain-rendering-using-gpu-based-geometry" class=" wrap external" target="_blank" rel="nofollow noreferrer">GPU Gems 2</a>, <a href="https://link.zhihu.com/?target=https%3A//hhoppe.com/geomclipmap.pdf" class=" wrap external" target="_blank" rel="nofollow noreferrer">geometry clipmap 原始论文</a></p>
+
+<h2 data-into-catalog-status="">算法整体框架</h2>
+
+<p><img src="https://pic4.zhimg.com/80/v2-558d471d61a73ab92c836ac89bfcd803_720w.jpg" data-size="normal" data-rawwidth="1330" data-rawheight="354" class="origin_image zh-lightbox-thumb lazy" width="1330" data-original="https://pic4.zhimg.com/v2-558d471d61a73ab92c836ac89bfcd803_r.jpg" data-actualsrc="https://pic4.zhimg.com/v2-558d471d61a73ab92c836ac89bfcd803_b.jpg" /></p>
+<p data-pid="Mz-CBUzn">从论文中可以清晰得知，算法需要三个步骤：计算active region（我们希望渲染的地形范围）；更新geometry clipmap（多级地形纹理/贴图）；裁剪渲染范围至贴图范围，并进行渲染。</p>
+
+<h2 data-into-catalog-status="">代码解读</h2>
+
+<h3 data-into-catalog-status="">Upsample（上采样）</h3>
+
+<p data-pid="zwNq6p6-">算法通过对较粗糙的高度图纹理进行插值来获取分辨率更高（一级）的高度图。</p>
+
+<p data-pid="MUcgADSU">不过在gpu gems提供的示例代码中，为了实现不同类型坐标的插值计算，这个算法写的比较绕，它的pixel shader是这样的：</p>
+
+<div><pre><code class="language-glsl"><span class="n">float4</span> <span class="n">UpsamplePS</span><span class="p">(</span><span class="n">float2</span> <span class="n">p_uv</span> <span class="o">:</span> <span class="n">TEXCOORD0</span><span class="p">)</span> <span class="o">:</span> <span class="n">COLOR</span>
+<span class="p">{</span>
+    <span class="k">float</span> <span class="n">residual</span> <span class="o">=</span> <span class="n">tex2D</span><span class="p">(</span><span class="n">ResidualSampler</span><span class="p">,</span> <span class="n">p_uv</span><span class="o">*</span><span class="n">OneOverSize</span><span class="p">);</span>  
+    
+    <span class="n">p_uv</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">p_uv</span><span class="p">);</span>
+    <span class="n">float2</span> <span class="n">p_uv_div2</span> <span class="o">=</span> <span class="n">p_uv</span><span class="o">/</span><span class="mi">2</span><span class="p">;</span>
+    <span class="n">float2</span> <span class="n">lookup_tij</span> <span class="o">=</span> <span class="n">p_uv_div2</span><span class="o">+</span><span class="mi">1</span><span class="p">;</span> 
+    <span class="n">float4</span> <span class="n">maskType</span> <span class="o">=</span> <span class="n">tex2D</span><span class="p">(</span><span class="n">LookupSampler</span><span class="p">,</span> <span class="n">lookup_tij</span><span class="p">);</span>     
+          
+    <span class="n">matrix</span> <span class="n">maskMatrix</span><span class="p">[</span><span class="mi">4</span><span class="p">];</span>
+    <span class="n">maskMatrix</span><span class="p">[</span><span class="mo">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">matrix</span><span class="p">(</span><span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">);</span>
+                           
+    <span class="n">maskMatrix</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">matrix</span><span class="p">(</span><span class="mo">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="o">-</span><span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span>
+                           <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">81.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">81.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">);</span>                        
+                           
+    <span class="n">maskMatrix</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">matrix</span><span class="p">(</span><span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">81.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">81.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">);</span>
+                           
+    <span class="n">maskMatrix</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="n">matrix</span><span class="p">(</span><span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">16.0</span><span class="n">f</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span>
+                           <span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">,</span> <span class="mf">1.0</span><span class="n">f</span><span class="o">/</span><span class="mf">256.0</span><span class="n">f</span><span class="p">);</span>
+
+    <span class="n">float2</span> <span class="n">offset</span> <span class="o">=</span> <span class="n">float2</span><span class="p">(</span><span class="n">dot</span><span class="p">(</span><span class="n">maskType</span><span class="p">.</span><span class="n">bgra</span><span class="p">,</span> <span class="n">float4</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">)),</span> <span class="n">dot</span><span class="p">(</span><span class="n">maskType</span><span class="p">.</span><span class="n">bgra</span><span class="p">,</span> <span class="n">float4</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">)));</span>
+    
+    <span class="k">float</span> <span class="n">z_predicted</span><span class="o">=</span><span class="mo">0</span><span class="p">;</span>
+    <span class="n">offset</span> <span class="o">=</span> <span class="p">(</span><span class="n">p_uv_div2</span><span class="o">-</span><span class="n">offset</span><span class="o">+</span><span class="mf">0.5</span><span class="p">)</span><span class="o">*</span><span class="n">OneOverSize</span><span class="o">+</span><span class="n">TextureOffset</span><span class="p">;</span>
+    <span class="k">for</span><span class="p">(</span><span class="k">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mo">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="mi">4</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">float</span> <span class="n">zrowv</span><span class="p">[</span><span class="mi">4</span><span class="p">];</span>
+        <span class="k">for</span> <span class="p">(</span><span class="k">int</span> <span class="n">j</span> <span class="o">=</span> <span class="mo">0</span><span class="p">;</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="mi">4</span><span class="p">;</span> <span class="n">j</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+                <span class="n">float2</span> <span class="n">vij</span>    <span class="o">=</span> <span class="n">offset</span><span class="o">+</span><span class="n">float2</span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="n">j</span><span class="p">)</span><span class="o">*</span><span class="n">OneOverSize</span><span class="p">;</span>
+                <span class="n">zrowv</span><span class="p">[</span><span class="n">j</span><span class="p">]</span>      <span class="o">=</span> <span class="n">tex2D</span><span class="p">(</span><span class="n">CoarseLevelElevationSampler</span><span class="p">,</span> <span class="n">vij</span><span class="p">);</span>
+        <span class="p">}</span>
+        
+        <span class="n">vector</span> <span class="n">mask</span> <span class="o">=</span> <span class="n">mul</span><span class="p">(</span><span class="n">maskType</span><span class="p">.</span><span class="n">bgra</span><span class="p">,</span> <span class="n">maskMatrix</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+        <span class="n">vector</span> <span class="n">zrow</span> <span class="o">=</span> <span class="n">vector</span><span class="p">(</span><span class="n">zrowv</span><span class="p">[</span><span class="mo">0</span><span class="p">],</span> <span class="n">zrowv</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">zrowv</span><span class="p">[</span><span class="mi">2</span><span class="p">],</span> <span class="n">zrowv</span><span class="p">[</span><span class="mi">3</span><span class="p">]);</span>
+        <span class="n">zrow</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">zrow</span><span class="p">);</span>
+        <span class="n">z_predicted</span> <span class="o">=</span> <span class="n">z_predicted</span><span class="o">+</span><span class="n">dot</span><span class="p">(</span><span class="n">zrow</span><span class="p">,</span> <span class="n">mask</span><span class="p">);</span>
+    <span class="p">}</span>
+
+    
+    <span class="n">z_predicted</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">z_predicted</span><span class="p">);</span>
+    
+    <span class="c1">// add the residual to get the actual elevation</span>
+    <span class="k">float</span> <span class="n">zf</span> <span class="o">=</span> <span class="n">z_predicted</span> <span class="o">+</span> <span class="n">residual</span><span class="p">;</span>  
+    
+    <span class="c1">// zf should always be an integer, since it gets packed</span>
+    <span class="c1">//  into the integer component of the floating-point texture</span>
+    <span class="n">zf</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">zf</span><span class="p">);</span>
+    
+    <span class="n">float4</span> <span class="n">uvc</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">float4</span><span class="p">((</span><span class="n">p_uv_div2</span><span class="o">+</span><span class="n">float2</span><span class="p">(</span><span class="mf">0.5</span><span class="n">f</span><span class="p">,</span><span class="mo">0</span><span class="p">)),</span> 
+                              <span class="p">(</span><span class="n">p_uv_div2</span><span class="o">+</span><span class="n">float2</span><span class="p">(</span><span class="mo">0</span><span class="p">,</span><span class="mf">0.5</span><span class="n">f</span><span class="p">))))</span><span class="o">*</span><span class="n">OneOverSize</span><span class="o">+</span><span class="n">TextureOffset</span><span class="p">.</span><span class="n">xyxy</span><span class="p">;</span> 
+            
+    <span class="c1">// look up the z_predicted value in the coarser levels  </span>
+    <span class="k">float</span> <span class="n">zc0</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">tex2D</span><span class="p">(</span><span class="n">CoarseLevelElevationSampler</span><span class="p">,</span> <span class="n">float4</span><span class="p">(</span><span class="n">uvc</span><span class="p">.</span><span class="n">xy</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)));</span>
+    <span class="k">float</span> <span class="n">zc1</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="n">tex2D</span><span class="p">(</span><span class="n">CoarseLevelElevationSampler</span><span class="p">,</span> <span class="n">float4</span><span class="p">(</span><span class="n">uvc</span><span class="p">.</span><span class="n">zw</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)));</span>        
+    
+    <span class="k">float</span> <span class="n">zf_zd</span> <span class="o">=</span> <span class="n">zf</span> <span class="o">+</span> <span class="p">((</span><span class="n">zc0</span><span class="o">+</span><span class="n">zc1</span><span class="p">)</span><span class="o">/</span><span class="mi">2</span><span class="o">-</span><span class="n">zf</span><span class="o">+</span><span class="mi">256</span><span class="p">)</span><span class="o">/</span><span class="mi">512</span><span class="p">;</span>
+
+    <span class="k">return</span> <span class="n">float4</span><span class="p">(</span><span class="n">zf_zd</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">);</span>
+<span class="p">}</span></code></pre></div>
+
+<p data-pid="ONtnu2LN">这个LookupSampler（texture）和maskMatrix比较魔法，在此分析一下。</p>
+
+<p data-pid="KKQ1SCHD">我们在上采样时要从粗糙lv0的高度图（方框）插值计算出更精确一级lv1的高度图（圆圈），它们之间的关系如图所示。为了方便起见，假设我们的uv坐标是一个单位对应一像素（注意在lv0中坐标细分为0.5），那么lv1在lv0中的坐标有4种类型：</p>
+
+<ul>
+<li data-pid="lm4di3En">和上一级重合：（0，0）</li>
+<li data-pid="r-mdpnen">在两个像素中央：（0，0.5)，（0.5，0）</li>
+<li data-pid="_0d1vGNV">在四个像素中央：（0.5，0.5）</li>
+</ul>
+
+<p><img src="https://pic1.zhimg.com/80/v2-e753702f87c0fc161b4e80cbfebe0c98_720w.jpg" data-size="normal" data-rawwidth="304" data-rawheight="296" class="content_image lazy" width="304" data-actualsrc="https://pic1.zhimg.com/v2-e753702f87c0fc161b4e80cbfebe0c98_b.jpg" /></p>
+<p data-pid="iW4d3pzQ">那么通过权重为（-1/16, 9/16, 9/16, -1/16）的四点法插值</p>
+
+<p><img src="https://pic2.zhimg.com/80/v2-0384a7d0d9f01c56508be8aa66bf1a45_720w.jpg" data-size="normal" data-rawwidth="1158" data-rawheight="94" class="origin_image zh-lightbox-thumb lazy" width="1158" data-original="https://pic2.zhimg.com/v2-0384a7d0d9f01c56508be8aa66bf1a45_r.jpg" data-actualsrc="https://pic2.zhimg.com/v2-0384a7d0d9f01c56508be8aa66bf1a45_b.jpg" /></p>
+<p data-pid="xS2NGvES">这四种类型的坐标的计算方式分别需要1、4、4、16个点的数据，如下图不同颜色的方框所示。</p>
+
+<p><img src="https://pic4.zhimg.com/80/v2-56ad3b01215be01dca703f76d70529cb_720w.jpg" data-size="normal" data-rawwidth="304" data-rawheight="296" class="content_image lazy" width="304" data-actualsrc="https://pic4.zhimg.com/v2-56ad3b01215be01dca703f76d70529cb_b.jpg" /></p>
+<p data-pid="qNQkcmwp">比较直观的插值公式如右侧的矩阵所示，直接对最大范围的16点数据与权重（方便起见省去了分母 /256）进行点乘即可。但是因为gpu不便处理分支语句，gpu gems里使用循环+额外的一张2*2控制纹理来实现算法，这些权重矩阵则被拆散进了maskMatrix中（如左侧所示）。比如右侧矩阵1的第一行在左侧矩阵4的第一行（这里为了和图片对应，行坐标颠倒了），而其第二行则在左侧矩阵3的第一行，第三行在左侧矩阵2的第一行......依次类推。控制纹理中则简单地记录了4个one-hot向量：</p>
+
+<p data-pid="Wx24FgM-"><b>后来我发现这里好像搞反了行坐标和列坐标，不过大概意思大家能看懂就行了</b></p>
+
+<ul>
+<li data-pid="q4bJfpDT">(1,0,0,0)：对应坐标类型（0，0）</li>
+<li data-pid="kJHF7xaa">(0,1,0,0)：对应坐标类型（0，0.5）</li>
+<li data-pid="lQVi97Ob">(0,0,1,0)：对应坐标类型（0.5， 0）</li>
+<li data-pid="GhS9DDHw">(0,0,0,1)：对应坐标类型（0.5，0.5）</li>
+</ul>
+
+<p><img src="https://pic4.zhimg.com/80/v2-b50f7aef8c841895f57311412b386e1b_720w.jpg" data-size="normal" data-rawwidth="1235" data-rawheight="717" class="origin_image zh-lightbox-thumb lazy" width="1235" data-original="https://pic4.zhimg.com/v2-b50f7aef8c841895f57311412b386e1b_r.jpg" data-actualsrc="https://pic4.zhimg.com/v2-b50f7aef8c841895f57311412b386e1b_b.jpg" /></p>
+<p data-pid="3AVEOQ0g">另外两个shader，ComputeNormal（法线计算）和 Render（渲染）相对比较简单，没有什么需要专门分析的地方，看gpu gems基本就行了。</p>
+
+<h3 data-into-catalog-status="">分级网格</h3>
+
+<p data-pid="iq1mDui0">原始论文中对网格的的实现搞了很多花活，其实我不太懂，大部分情况应该都是为了节省顶点的开销，尽量复用子结构。比较重要的点应该在于网格并不是正好一级级“嵌套”起来的，层级之间存在一小片可以调整的区域，这样内层网格可以随着地图加载中心点的变化进行一点点平移，而外层则不用移动。需要注意为了防止插值造成的波浪状效果，mesh网格是“吸附”到地图坐标网格上的，也就是说纹理贴图只能进行一格格的平移，正好也对应了这个调整范围。</p>
+
+<p data-pid="RbKIFtKP">我在测试的时候直接奢侈一把，网格全部老老实实画出来完事，不做顶点复用。这里输出一下边缘过渡区的alpha值来展示一下分级的网格结构：</p>
+
+<p><img src="https://pic3.zhimg.com/80/v2-cc93f14413be7c2d1cb0c346e54f32d6_720w.jpg" data-caption="" data-size="normal" data-rawwidth="1539" data-rawheight="776" class="origin_image zh-lightbox-thumb lazy" width="1539" data-original="https://pic3.zhimg.com/v2-cc93f14413be7c2d1cb0c346e54f32d6_r.jpg" data-actualsrc="https://pic3.zhimg.com/v2-cc93f14413be7c2d1cb0c346e54f32d6_b.jpg" /></p>
+<h3 data-into-catalog-status="">流式加载</h3>
+
+<p data-pid="6v40jOT7">咕了</p>
+
+<h2 data-into-catalog-status="">一些改动</h2>
+
+<h3 data-into-catalog-status="">Occlusion（遮挡）</h3>
+
+<p data-pid="ltKSqnU7">gpu gems提供的代码仅用法线计算光照强度（Lambertian reflectance），已经可以获得非常明显的明暗效果，让地形有了立体感；但是在起伏的山丘地形上，明显能发现怪怪的，是因为没有临近地形的遮挡效果。考虑单个平行光源（太阳）的情况，在每一个位置，我们可以根据光线方向作一条射线判断是否与地形相交来确定该位置是否会被遮挡，计算出额外的一张遮挡贴图，在最终的render里与输出相乘，类似这样就可以了：</p>
+
+<div><pre><code class="language-glsl"><span class="n">OUTPUT</span> <span class="n">OcclusionVS</span><span class="p">(</span><span class="n">appdata</span> <span class="n">v</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">OUTPUT</span> <span class="k">output</span><span class="p">;</span>
+    <span class="k">output</span><span class="p">.</span><span class="n">position</span>   <span class="o">=</span> <span class="n">float4</span><span class="p">(</span><span class="n">float2</span><span class="p">(</span><span class="n">v</span><span class="p">.</span><span class="n">vertex</span><span class="p">.</span><span class="n">x</span><span class="p">,</span><span class="n">v</span><span class="p">.</span><span class="n">vertex</span><span class="p">.</span><span class="n">y</span><span class="p">),</span><span class="mf">0.0</span><span class="p">,</span><span class="mf">1.0</span><span class="p">);</span>
+    <span class="k">output</span><span class="p">.</span><span class="n">position</span>   <span class="o">=</span> <span class="n">UnityObjectToClipPos</span><span class="p">(</span><span class="n">v</span><span class="p">.</span><span class="n">vertex</span><span class="p">);</span>
+    <span class="k">output</span><span class="p">.</span><span class="n">texcoords</span>  <span class="o">=</span> <span class="n">v</span><span class="p">.</span><span class="n">uv</span><span class="o">*</span><span class="n">Size</span><span class="p">;</span>
+    
+    <span class="k">return</span> <span class="k">output</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">float4</span> <span class="n">OcclusionPS</span><span class="p">(</span><span class="n">OUTPUT</span> <span class="k">input</span><span class="p">)</span> <span class="o">:</span> <span class="n">SV_Target</span>
+<span class="p">{</span>
+    <span class="n">float2</span> <span class="n">p_uv_div2</span> <span class="o">=</span> <span class="n">floor</span><span class="p">(</span><span class="k">input</span><span class="p">.</span><span class="n">texcoords</span><span class="p">)</span><span class="o">/</span><span class="mi">2</span><span class="p">;</span>
+
+    <span class="n">float2</span> <span class="n">uv</span> <span class="o">=</span> <span class="p">(</span><span class="n">p_uv_div2</span> <span class="o">+</span> <span class="mf">0.5</span><span class="p">)</span><span class="o">*</span><span class="n">OneOverSize</span> <span class="o">+</span> <span class="n">TextureOffset</span><span class="p">;</span>
+    <span class="k">float</span> <span class="n">height</span> <span class="o">=</span> <span class="n">coarseHeight</span><span class="p">.</span><span class="n">Sample</span><span class="p">(</span><span class="n">linear_repeat_sampler</span><span class="p">,</span> <span class="n">uv</span><span class="p">).</span><span class="n">x</span><span class="p">;</span>
+
+    <span class="k">float</span> <span class="n">occlusion</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="k">for</span><span class="p">(</span><span class="k">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="mi">30</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">float</span> <span class="n">dis</span> <span class="o">=</span> <span class="n">i</span> <span class="o">/</span> <span class="mf">2.0</span><span class="p">;</span>
+        <span class="n">float2</span> <span class="n">uv</span> <span class="o">=</span> <span class="p">(</span><span class="n">p_uv_div2</span> <span class="o">+</span> <span class="n">dis</span> <span class="o">*</span> <span class="n">LightDirection</span> <span class="o">+</span> <span class="mf">0.5</span><span class="p">)</span><span class="o">*</span><span class="n">OneOverSize</span> <span class="o">+</span> <span class="n">TextureOffset</span><span class="p">;</span>
+        <span class="k">float</span> <span class="n">h</span> <span class="o">=</span> <span class="n">coarseHeight</span><span class="p">.</span><span class="n">Sample</span><span class="p">(</span><span class="n">linear_repeat_sampler</span><span class="p">,</span> <span class="n">uv</span><span class="p">).</span><span class="n">x</span><span class="p">;</span>
+        <span class="n">occlusion</span> <span class="o">+=</span> <span class="n">clamp</span><span class="p">(</span><span class="n">sign</span><span class="p">(</span><span class="n">height</span> <span class="o">+</span> <span class="n">dis</span> <span class="o">*</span> <span class="n">ScaleFac</span> <span class="o">-</span> <span class="n">h</span><span class="p">),</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mo">0</span><span class="p">)</span> <span class="o">*</span> <span class="mf">0.2</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">float4</span><span class="p">(</span><span class="n">clamp</span><span class="p">(</span><span class="n">occlusion</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">,</span> <span class="mo">0</span><span class="p">);</span>
+<span class="p">}</span></code></pre></div>
+
+<p><img src="https://pic1.zhimg.com/80/v2-de10cbb49c06ab973e01160643ae7ae8_720w.jpg" data-size="normal" data-rawwidth="1550" data-rawheight="782" class="origin_image zh-lightbox-thumb lazy" width="1550" data-original="https://pic1.zhimg.com/v2-de10cbb49c06ab973e01160643ae7ae8_r.jpg" data-actualsrc="https://pic1.zhimg.com/v2-de10cbb49c06ab973e01160643ae7ae8_b.jpg" />
+<img src="https://pic1.zhimg.com/80/v2-30e83db10aef9270644cefeba99e22e4_720w.jpg" data-size="normal" data-rawwidth="1417" data-rawheight="527" class="origin_image zh-lightbox-thumb lazy" width="1417" data-original="https://pic1.zhimg.com/v2-30e83db10aef9270644cefeba99e22e4_r.jpg" data-actualsrc="https://pic1.zhimg.com/v2-30e83db10aef9270644cefeba99e22e4_b.jpg" /></p>
+<h2 data-into-catalog-status="">调试中遇到的问题</h2>
+
+<p data-pid="M24h7EGe">因为基本没怎么写过shader，中间碰到了一些问题解决了好久。一个碰到好多次的问题就是，纹理中会出现一些横竖的条纹，这个原因99%就是采样的问题。第一次是因为没有关闭纹理的mipmap，而我的贴图又是一个长方形的尺寸，导致短边上被开启了降采样，出现了好多暗纹。第二次是因为纹理使用了“点采样”，也就是不进行插值，但是在计算uv坐标的时候使用了a+b的形式，其中b是能刚好落在贴图网格上的，但是a忘了做好取整的操作，导致某些地方的采样点重合了，出现了横竖的条纹。</p>
+
+    </div><a class="u-url" href="/unity/2022/03/07/geoclipmap.html" hidden></a>
+</article>
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">The Lost Fridge&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">The Lost Fridge&#39;s blog</li><li><a class="u-email" href="mailto:chiefbean@foxmail.com">chiefbean@foxmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/beantowel"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">beantowel</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>The blogs inside the fridge (mostly harmless) lost in the space.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

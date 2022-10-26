@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.6.1 -->
+<title>[jsbsim学习] 配置文件解析 | The Lost Fridge’s blog</title>
+<meta name="generator" content="Jekyll v4.1.1" />
+<meta property="og:title" content="[jsbsim学习] 配置文件解析" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="上文我们讨论解读了jsbsim的配置文件，现在让我们使用程序来加载这个配置文件，进行计算吧。 一个C#语言的“简易版”jsbsim代码还在开发中：https://github.com/beantowel/minimal-jsim 预期后续能够作为一个第三方包供unity开发使用。 xml反序列化 在解析配置文件时，我发现实际上jsbsim提供了一份xml的结构描述文件（schema）：JSBSim.xsd。而且里面也提供了一些注释，可以对上文进行补充。我们使用 .net 提供的程序 xsd.exe 直接来生成 c# 中的类，对配置文件进行反序列化。使用方法也很简单，运行： xsd JSBSim.xsd /classes 就可以了，但是如果我们直接运行这个命令的话，会发现程序报错，因为这个JSBSim存在group元素的循环引用。如下图中func_group -&gt; product -&gt; func_group 的循环。 在xsd文件中，我们可以认为 xs:group 类似C语言中的宏命令，在 xsd.exe 程序生成类的过程中是会直接展开的，因此循环引用会导致无穷展开，是非法的。可以参考这个blog来进行一些修改绕过这个限制，具体细节上因为xsd不一样不能直接照搬，我直接把修改后的xsd和生成的class贴在这里。 这样，我们就能对配置文件进行反序列化了。 质量、转动惯量解析 unity仅支持转动张量（惯性主轴主成分构成的Vector3）+ 主轴旋转角格式的输入，即inertiaTensor和inertiaTensorRotation，但是我们的配置文件中给出的是一般的转动惯量形式，因此需要做一下转换。 PhysX 中提供了一个函数PxDiagonalize来对转动惯量进行对角化，可惜我们使用的是c#脚本，无法直接引用c++的库。我尝试过使用PhysX.Net，但是发现里面似乎也没有提供这个方法，并且文档质量太差。最终我还是选择拿c#把c++代码抄一遍完事，简单快捷。 这个算法还挺有趣的，在下面贴一下。主要思路就是通过x，y或z轴的旋转一步步迭代将转动惯量对角化，举个不恰当的例子，就像转魔方一样。区别在于这里的每一步操作都是较优的逼近方程的解，而魔方在我这种菜鸡手上可能永远都转不出来。在这里，m是输入的转动惯量，q是对m的旋转（四元数形式，其对应的旋转矩阵是axes），d=qT m q 是旋转后的转动惯量，迭代的终止条件就是 d 变为对角化矩阵。迭代中我们将每次的x，y或z轴旋转操作累计（累乘）在q上，这里算法的关键就是如何选出我们每次要转的轴，和算出要旋转的角度。 算法选择了惯性积最大的那个轴开刀，即如果Iyz比Ixy、Ixz都大的情况下，优先绕x轴进行调整。 此时要调整的角度phi的余切cot(2 phi)=(Iyy - Izz) / (2 Iyz) ，这个角度就是经过旋转后，能够取得Iyz最小的角度，通过坐标变换和二次函数极值点可以推导出 。 迭代法的收敛性不会证，但是直观上感觉旋转几次基本就够了（注意迭代次数可能大于3次，并不是在每一个轴上旋转一次就足够了，需要来回调整）。代码里设定的最大迭代次数是24次，也说明这个收敛的挺快了。 PX_FOUNDATION_API PxVec3 physx::PxDiagonalize(const PxMat33&amp; m, PxQuat&amp; massFrame) { // jacobi rotation using quaternions (from an idea of Stan Melax, with fix for precision issues) const PxU32 MAX_ITERS = 24; PxQuat q = PxQuat(PxIdentity); PxMat33 d; for(PxU32 i = 0; i &lt; MAX_ITERS; i++) { PxMat33 axes(q); d = axes.getTranspose() * m * axes; PxReal d0 = PxAbs(d[1][2]), d1 = PxAbs(d[0][2]), d2 = PxAbs(d[0][1]); PxU32 a = PxU32(d0 &gt; d1 &amp;&amp; d0 &gt; d2 ? 0 : d1 &gt; d2 ? 1 : 2); // rotation axis index, from largest off-diagonal // element PxU32 a1 = shdfnd::getNextIndex3(a), a2 = shdfnd::getNextIndex3(a1); if(d[a1][a2] == 0.0f || PxAbs(d[a1][a1] - d[a2][a2]) &gt; 2e6f * PxAbs(2.0f * d[a1][a2])) break; PxReal w = (d[a1][a1] - d[a2][a2]) / (2.0f * d[a1][a2]); // cot(2 * phi), where phi is the rotation angle PxReal absw = PxAbs(w); PxQuat r; if(absw &gt; 1000) r = indexedRotation(a, 1 / (4 * w), 1.f); // h will be very close to 1, so use small angle approx instead else { PxReal t = 1 / (absw + PxSqrt(w * w + 1)); // absolute value of tan phi PxReal h = 1 / PxSqrt(t * t + 1); // absolute value of cos phi PX_ASSERT(h != 1); // |w|&lt;1000 guarantees this with typical IEEE754 machine eps (approx 6e-8) r = indexedRotation(a, PxSqrt((1 - h) / 2) * PxSign(w), PxSqrt((1 + h) / 2)); } q = (q * r).getNormalized(); } massFrame = q; return PxVec3(d.column0.x, d.column1.y, d.column2.z); } 空气动力函数解析 jsbsim的配置文件支持了相当多的函数类型，不过在我们选择的f16配置文件中，aerodynamics节点下的子函数只涉及到了product和table两种类型，解析起来比较简单，可以参考文章第一段中提供的代码。 需要注意我们的程序中使用公制单位存储所有数据，property的标识符“node”最后一部分通常会给出单位，便于转换；但是table表格中的数据未给出单位，同时其也可能不是无量纲数，需要额外处理。在f16的配置文件中，所有的表格都最终都是通过product乘法计算出力/力矩的，尚且可以通过其他变量的单位反推其量纲进行处理。 对于Property的处理还没有发现特别好的方案，由于jsbsim采用了这种相当于全局变量的架构，要想使用它的配置文件，我们的组件也必然受到这种设计的影响，这种全局变量的优点是直观、程序设计简单，缺点是对外提供接口语义不清晰、Property间如果有依赖关系容易产生隐形bug。" />
+<meta property="og:description" content="上文我们讨论解读了jsbsim的配置文件，现在让我们使用程序来加载这个配置文件，进行计算吧。 一个C#语言的“简易版”jsbsim代码还在开发中：https://github.com/beantowel/minimal-jsim 预期后续能够作为一个第三方包供unity开发使用。 xml反序列化 在解析配置文件时，我发现实际上jsbsim提供了一份xml的结构描述文件（schema）：JSBSim.xsd。而且里面也提供了一些注释，可以对上文进行补充。我们使用 .net 提供的程序 xsd.exe 直接来生成 c# 中的类，对配置文件进行反序列化。使用方法也很简单，运行： xsd JSBSim.xsd /classes 就可以了，但是如果我们直接运行这个命令的话，会发现程序报错，因为这个JSBSim存在group元素的循环引用。如下图中func_group -&gt; product -&gt; func_group 的循环。 在xsd文件中，我们可以认为 xs:group 类似C语言中的宏命令，在 xsd.exe 程序生成类的过程中是会直接展开的，因此循环引用会导致无穷展开，是非法的。可以参考这个blog来进行一些修改绕过这个限制，具体细节上因为xsd不一样不能直接照搬，我直接把修改后的xsd和生成的class贴在这里。 这样，我们就能对配置文件进行反序列化了。 质量、转动惯量解析 unity仅支持转动张量（惯性主轴主成分构成的Vector3）+ 主轴旋转角格式的输入，即inertiaTensor和inertiaTensorRotation，但是我们的配置文件中给出的是一般的转动惯量形式，因此需要做一下转换。 PhysX 中提供了一个函数PxDiagonalize来对转动惯量进行对角化，可惜我们使用的是c#脚本，无法直接引用c++的库。我尝试过使用PhysX.Net，但是发现里面似乎也没有提供这个方法，并且文档质量太差。最终我还是选择拿c#把c++代码抄一遍完事，简单快捷。 这个算法还挺有趣的，在下面贴一下。主要思路就是通过x，y或z轴的旋转一步步迭代将转动惯量对角化，举个不恰当的例子，就像转魔方一样。区别在于这里的每一步操作都是较优的逼近方程的解，而魔方在我这种菜鸡手上可能永远都转不出来。在这里，m是输入的转动惯量，q是对m的旋转（四元数形式，其对应的旋转矩阵是axes），d=qT m q 是旋转后的转动惯量，迭代的终止条件就是 d 变为对角化矩阵。迭代中我们将每次的x，y或z轴旋转操作累计（累乘）在q上，这里算法的关键就是如何选出我们每次要转的轴，和算出要旋转的角度。 算法选择了惯性积最大的那个轴开刀，即如果Iyz比Ixy、Ixz都大的情况下，优先绕x轴进行调整。 此时要调整的角度phi的余切cot(2 phi)=(Iyy - Izz) / (2 Iyz) ，这个角度就是经过旋转后，能够取得Iyz最小的角度，通过坐标变换和二次函数极值点可以推导出 。 迭代法的收敛性不会证，但是直观上感觉旋转几次基本就够了（注意迭代次数可能大于3次，并不是在每一个轴上旋转一次就足够了，需要来回调整）。代码里设定的最大迭代次数是24次，也说明这个收敛的挺快了。 PX_FOUNDATION_API PxVec3 physx::PxDiagonalize(const PxMat33&amp; m, PxQuat&amp; massFrame) { // jacobi rotation using quaternions (from an idea of Stan Melax, with fix for precision issues) const PxU32 MAX_ITERS = 24; PxQuat q = PxQuat(PxIdentity); PxMat33 d; for(PxU32 i = 0; i &lt; MAX_ITERS; i++) { PxMat33 axes(q); d = axes.getTranspose() * m * axes; PxReal d0 = PxAbs(d[1][2]), d1 = PxAbs(d[0][2]), d2 = PxAbs(d[0][1]); PxU32 a = PxU32(d0 &gt; d1 &amp;&amp; d0 &gt; d2 ? 0 : d1 &gt; d2 ? 1 : 2); // rotation axis index, from largest off-diagonal // element PxU32 a1 = shdfnd::getNextIndex3(a), a2 = shdfnd::getNextIndex3(a1); if(d[a1][a2] == 0.0f || PxAbs(d[a1][a1] - d[a2][a2]) &gt; 2e6f * PxAbs(2.0f * d[a1][a2])) break; PxReal w = (d[a1][a1] - d[a2][a2]) / (2.0f * d[a1][a2]); // cot(2 * phi), where phi is the rotation angle PxReal absw = PxAbs(w); PxQuat r; if(absw &gt; 1000) r = indexedRotation(a, 1 / (4 * w), 1.f); // h will be very close to 1, so use small angle approx instead else { PxReal t = 1 / (absw + PxSqrt(w * w + 1)); // absolute value of tan phi PxReal h = 1 / PxSqrt(t * t + 1); // absolute value of cos phi PX_ASSERT(h != 1); // |w|&lt;1000 guarantees this with typical IEEE754 machine eps (approx 6e-8) r = indexedRotation(a, PxSqrt((1 - h) / 2) * PxSign(w), PxSqrt((1 + h) / 2)); } q = (q * r).getNormalized(); } massFrame = q; return PxVec3(d.column0.x, d.column1.y, d.column2.z); } 空气动力函数解析 jsbsim的配置文件支持了相当多的函数类型，不过在我们选择的f16配置文件中，aerodynamics节点下的子函数只涉及到了product和table两种类型，解析起来比较简单，可以参考文章第一段中提供的代码。 需要注意我们的程序中使用公制单位存储所有数据，property的标识符“node”最后一部分通常会给出单位，便于转换；但是table表格中的数据未给出单位，同时其也可能不是无量纲数，需要额外处理。在f16的配置文件中，所有的表格都最终都是通过product乘法计算出力/力矩的，尚且可以通过其他变量的单位反推其量纲进行处理。 对于Property的处理还没有发现特别好的方案，由于jsbsim采用了这种相当于全局变量的架构，要想使用它的配置文件，我们的组件也必然受到这种设计的影响，这种全局变量的优点是直观、程序设计简单，缺点是对外提供接口语义不清晰、Property间如果有依赖关系容易产生隐形bug。" />
+<link rel="canonical" href="/unity/2021/05/23/jsbsim-parse.html" />
+<meta property="og:url" content="/unity/2021/05/23/jsbsim-parse.html" />
+<meta property="og:site_name" content="The Lost Fridge’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2021-05-23T23:04:00+08:00" />
+<script type="application/ld+json">
+{"url":"/unity/2021/05/23/jsbsim-parse.html","@type":"BlogPosting","description":"上文我们讨论解读了jsbsim的配置文件，现在让我们使用程序来加载这个配置文件，进行计算吧。 一个C#语言的“简易版”jsbsim代码还在开发中：https://github.com/beantowel/minimal-jsim 预期后续能够作为一个第三方包供unity开发使用。 xml反序列化 在解析配置文件时，我发现实际上jsbsim提供了一份xml的结构描述文件（schema）：JSBSim.xsd。而且里面也提供了一些注释，可以对上文进行补充。我们使用 .net 提供的程序 xsd.exe 直接来生成 c# 中的类，对配置文件进行反序列化。使用方法也很简单，运行： xsd JSBSim.xsd /classes 就可以了，但是如果我们直接运行这个命令的话，会发现程序报错，因为这个JSBSim存在group元素的循环引用。如下图中func_group -&gt; product -&gt; func_group 的循环。 在xsd文件中，我们可以认为 xs:group 类似C语言中的宏命令，在 xsd.exe 程序生成类的过程中是会直接展开的，因此循环引用会导致无穷展开，是非法的。可以参考这个blog来进行一些修改绕过这个限制，具体细节上因为xsd不一样不能直接照搬，我直接把修改后的xsd和生成的class贴在这里。 这样，我们就能对配置文件进行反序列化了。 质量、转动惯量解析 unity仅支持转动张量（惯性主轴主成分构成的Vector3）+ 主轴旋转角格式的输入，即inertiaTensor和inertiaTensorRotation，但是我们的配置文件中给出的是一般的转动惯量形式，因此需要做一下转换。 PhysX 中提供了一个函数PxDiagonalize来对转动惯量进行对角化，可惜我们使用的是c#脚本，无法直接引用c++的库。我尝试过使用PhysX.Net，但是发现里面似乎也没有提供这个方法，并且文档质量太差。最终我还是选择拿c#把c++代码抄一遍完事，简单快捷。 这个算法还挺有趣的，在下面贴一下。主要思路就是通过x，y或z轴的旋转一步步迭代将转动惯量对角化，举个不恰当的例子，就像转魔方一样。区别在于这里的每一步操作都是较优的逼近方程的解，而魔方在我这种菜鸡手上可能永远都转不出来。在这里，m是输入的转动惯量，q是对m的旋转（四元数形式，其对应的旋转矩阵是axes），d=qT m q 是旋转后的转动惯量，迭代的终止条件就是 d 变为对角化矩阵。迭代中我们将每次的x，y或z轴旋转操作累计（累乘）在q上，这里算法的关键就是如何选出我们每次要转的轴，和算出要旋转的角度。 算法选择了惯性积最大的那个轴开刀，即如果Iyz比Ixy、Ixz都大的情况下，优先绕x轴进行调整。 此时要调整的角度phi的余切cot(2 phi)=(Iyy - Izz) / (2 Iyz) ，这个角度就是经过旋转后，能够取得Iyz最小的角度，通过坐标变换和二次函数极值点可以推导出 。 迭代法的收敛性不会证，但是直观上感觉旋转几次基本就够了（注意迭代次数可能大于3次，并不是在每一个轴上旋转一次就足够了，需要来回调整）。代码里设定的最大迭代次数是24次，也说明这个收敛的挺快了。 PX_FOUNDATION_API PxVec3 physx::PxDiagonalize(const PxMat33&amp; m, PxQuat&amp; massFrame) { // jacobi rotation using quaternions (from an idea of Stan Melax, with fix for precision issues) const PxU32 MAX_ITERS = 24; PxQuat q = PxQuat(PxIdentity); PxMat33 d; for(PxU32 i = 0; i &lt; MAX_ITERS; i++) { PxMat33 axes(q); d = axes.getTranspose() * m * axes; PxReal d0 = PxAbs(d[1][2]), d1 = PxAbs(d[0][2]), d2 = PxAbs(d[0][1]); PxU32 a = PxU32(d0 &gt; d1 &amp;&amp; d0 &gt; d2 ? 0 : d1 &gt; d2 ? 1 : 2); // rotation axis index, from largest off-diagonal // element PxU32 a1 = shdfnd::getNextIndex3(a), a2 = shdfnd::getNextIndex3(a1); if(d[a1][a2] == 0.0f || PxAbs(d[a1][a1] - d[a2][a2]) &gt; 2e6f * PxAbs(2.0f * d[a1][a2])) break; PxReal w = (d[a1][a1] - d[a2][a2]) / (2.0f * d[a1][a2]); // cot(2 * phi), where phi is the rotation angle PxReal absw = PxAbs(w); PxQuat r; if(absw &gt; 1000) r = indexedRotation(a, 1 / (4 * w), 1.f); // h will be very close to 1, so use small angle approx instead else { PxReal t = 1 / (absw + PxSqrt(w * w + 1)); // absolute value of tan phi PxReal h = 1 / PxSqrt(t * t + 1); // absolute value of cos phi PX_ASSERT(h != 1); // |w|&lt;1000 guarantees this with typical IEEE754 machine eps (approx 6e-8) r = indexedRotation(a, PxSqrt((1 - h) / 2) * PxSign(w), PxSqrt((1 + h) / 2)); } q = (q * r).getNormalized(); } massFrame = q; return PxVec3(d.column0.x, d.column1.y, d.column2.z); } 空气动力函数解析 jsbsim的配置文件支持了相当多的函数类型，不过在我们选择的f16配置文件中，aerodynamics节点下的子函数只涉及到了product和table两种类型，解析起来比较简单，可以参考文章第一段中提供的代码。 需要注意我们的程序中使用公制单位存储所有数据，property的标识符“node”最后一部分通常会给出单位，便于转换；但是table表格中的数据未给出单位，同时其也可能不是无量纲数，需要额外处理。在f16的配置文件中，所有的表格都最终都是通过product乘法计算出力/力矩的，尚且可以通过其他变量的单位反推其量纲进行处理。 对于Property的处理还没有发现特别好的方案，由于jsbsim采用了这种相当于全局变量的架构，要想使用它的配置文件，我们的组件也必然受到这种设计的影响，这种全局变量的优点是直观、程序设计简单，缺点是对外提供接口语义不清晰、Property间如果有依赖关系容易产生隐形bug。","headline":"[jsbsim学习] 配置文件解析","dateModified":"2021-05-23T23:04:00+08:00","datePublished":"2021-05-23T23:04:00+08:00","mainEntityOfPage":{"@type":"WebPage","@id":"/unity/2021/05/23/jsbsim-parse.html"},"@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="The Lost Fridge&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">The Lost Fridge&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+    <header class="post-header">
+        <h1 class="post-title p-name" itemprop="name headline">[jsbsim学习] 配置文件解析</h1>
+        <p class="post-meta">
+            <time class="dt-published" datetime="2021-05-23T23:04:00+08:00" itemprop="datePublished">May 23, 2021
+            </time></p>
+    </header>
+
+    <!-- <h2>目录</h2> -->
+    <ul><li>xml反序列化</li><li>质量、转动惯量解析</li><li>空气动力函数解析</li></ul>
+    <div class="post-content e-content" itemprop="articleBody">
+        <p data-first-child="" data-pid="Uepj_RUc"><a href="https://zhuanlan.zhihu.com/p/366482912" class="internal">上文</a>我们讨论解读了jsbsim的配置文件，现在让我们使用程序来加载这个配置文件，进行计算吧。</p>
+
+<p data-pid="vYBod8AN">一个C#语言的“简易版”jsbsim代码还在开发中：<a href="https://link.zhihu.com/?target=https%3A//github.com/beantowel/minimal-jsim" class=" external" target="_blank" rel="nofollow noreferrer"><span class="invisible">https://</span><span class="visible">github.com/beantowel/mi</span><span class="invisible">nimal-jsim</span><span class="ellipsis"></span></a> 预期后续能够作为一个第三方包供unity开发使用。</p>
+
+<h3>xml反序列化</h3>
+
+<p data-pid="86WrIBD-">在解析配置文件时，我发现实际上jsbsim提供了一份xml的结构描述文件（schema）：<a href="https://link.zhihu.com/?target=https%3A//github.com/JSBSim-Team/jsbsim/blob/master/JSBSim.xsd" class=" wrap external" target="_blank" rel="nofollow noreferrer">JSBSim.xsd</a>。而且里面也提供了一些注释，可以对上文进行补充。我们使用 .net 提供的程序 <a href="https://link.zhihu.com/?target=https%3A//docs.microsoft.com/en-us/dotnet/standard/serialization/xml-schema-definition-tool-xsd-exe" class=" wrap external" target="_blank" rel="nofollow noreferrer">xsd.exe</a> 直接来生成 c# 中的类，对配置文件进行反序列化。使用方法也很简单，运行：</p>
+
+<p data-pid="N5gaazsW"><code>xsd JSBSim.xsd /classes</code> </p>
+
+<p data-pid="OcqiqZ_L">就可以了，但是如果我们直接运行这个命令的话，会发现程序报错，因为这个JSBSim存在group元素的循环引用。如下图中func_group -&gt; product -&gt; func_group 的循环。</p>
+
+<p><img src="https://pic2.zhimg.com/80/v2-650def5cf34cd0b6c0c9cbdea122ecc5_720w.jpg" data-caption="" data-size="normal" data-rawwidth="567" data-rawheight="477" class="origin_image zh-lightbox-thumb lazy" width="567" data-original="https://pic2.zhimg.com/v2-650def5cf34cd0b6c0c9cbdea122ecc5_r.jpg" data-actualsrc="https://pic2.zhimg.com/v2-650def5cf34cd0b6c0c9cbdea122ecc5_b.jpg" />
+<img src="https://pic3.zhimg.com/80/v2-955548fc5580c43c5fefd7481f9a1996_720w.jpg" data-caption="" data-size="normal" data-rawwidth="625" data-rawheight="326" class="origin_image zh-lightbox-thumb lazy" width="625" data-original="https://pic3.zhimg.com/v2-955548fc5580c43c5fefd7481f9a1996_r.jpg" data-actualsrc="https://pic3.zhimg.com/v2-955548fc5580c43c5fefd7481f9a1996_b.jpg" /></p>
+<p data-pid="D8T66pGO">在xsd文件中，我们可以认为 xs:group 类似C语言中的宏命令，在 xsd.exe 程序生成类的过程中是会直接展开的，因此循环引用会导致无穷展开，是非法的。可以参考这个<a href="https://link.zhihu.com/?target=https%3A//devio.wordpress.com/2012/05/22/dealing-with-circular-group-reference-errors-in-xsd-exe/" class=" wrap external" target="_blank" rel="nofollow noreferrer">blog</a>来进行一些修改绕过这个限制，具体细节上因为xsd不一样不能直接照搬，我直接把修改后的xsd和生成的class贴在<a href="https://link.zhihu.com/?target=https%3A//gist.github.com/beantowel/9a404dbdd5d764294d5d456a1fd8426d" class=" wrap external" target="_blank" rel="nofollow noreferrer">这里</a>。 这样，我们就能对配置文件进行反序列化了。</p>
+
+<h3>质量、转动惯量解析</h3>
+
+<p><img src="https://pic2.zhimg.com/80/v2-1043dcbaee4d4a18f9aa849227e44725_720w.jpg" data-caption="" data-size="normal" data-rawwidth="551" data-rawheight="215" class="origin_image zh-lightbox-thumb lazy" width="551" data-original="https://pic2.zhimg.com/v2-1043dcbaee4d4a18f9aa849227e44725_r.jpg" data-actualsrc="https://pic2.zhimg.com/v2-1043dcbaee4d4a18f9aa849227e44725_b.jpg" /></p>
+<p data-pid="WDpBPC24">unity仅支持转动张量（惯性主轴主成分构成的Vector3）+ 主轴旋转角格式的输入，即inertiaTensor和inertiaTensorRotation，但是我们的配置文件中给出的是一般的转动惯量形式，因此需要做一下转换。 PhysX 中提供了一个函数<a href="https://link.zhihu.com/?target=https%3A//github.com/NVIDIAGameWorks/PhysX-3.4/blob/master/PxShared/src/foundation/src/PsMathUtils.cpp" class=" wrap external" target="_blank" rel="nofollow noreferrer">PxDiagonalize</a>来对转动惯量进行对角化，可惜我们使用的是c#脚本，无法直接引用c++的库。我尝试过使用PhysX.Net，但是发现里面似乎也没有提供这个方法，并且文档质量太差。最终我还是选择拿c#把c++代码抄一遍完事，简单快捷。</p>
+
+<p data-pid="ho65x-ay">这个算法还挺有趣的，在下面贴一下。主要思路就是通过x，y或z轴的旋转一步步迭代将转动惯量对角化，举个不恰当的例子，就像转魔方一样。区别在于这里的每一步操作都是较优的逼近方程的解，而魔方在我这种菜鸡手上可能永远都转不出来。在这里，m是输入的转动惯量，q是对m的旋转（四元数形式，其对应的旋转矩阵是axes），d=qT m q 是旋转后的转动惯量，迭代的终止条件就是 d 变为对角化矩阵。迭代中我们将每次的x，y或z轴旋转操作累计（累乘）在q上，这里算法的关键就是如何选出我们每次要转的轴，和算出要旋转的角度。</p>
+
+<p data-pid="bizATdzm">算法选择了惯性积最大的那个轴开刀，即如果Iyz比Ixy、Ixz都大的情况下，优先绕x轴进行调整。 此时要调整的角度phi的余切cot(2 phi)=(Iyy - Izz) / (2 Iyz)  ，这个角度就是经过旋转后，能够取得Iyz最小的角度，通过坐标变换和二次函数极值点可以推导出 。</p>
+
+<p data-pid="Sje5BUwt">迭代法的收敛性不会证，但是直观上感觉旋转几次基本就够了（注意迭代次数可能大于3次，并不是在每一个轴上旋转一次就足够了，需要来回调整）。代码里设定的最大迭代次数是24次，也说明这个收敛的挺快了。</p>
+
+<div><pre><code class="language-cpp"><span class="n">PX_FOUNDATION_API</span> <span class="n">PxVec3</span> <span class="n">physx</span><span class="o">::</span><span class="n">PxDiagonalize</span><span class="p">(</span><span class="k">const</span> <span class="n">PxMat33</span><span class="o">&amp;</span> <span class="n">m</span><span class="p">,</span> <span class="n">PxQuat</span><span class="o">&amp;</span> <span class="n">massFrame</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="c1">// jacobi rotation using quaternions (from an idea of Stan Melax, with fix for precision issues)
+</span><span class="c1"></span>
+	<span class="k">const</span> <span class="n">PxU32</span> <span class="n">MAX_ITERS</span> <span class="o">=</span> <span class="mi">24</span><span class="p">;</span>
+
+	<span class="n">PxQuat</span> <span class="n">q</span> <span class="o">=</span> <span class="n">PxQuat</span><span class="p">(</span><span class="n">PxIdentity</span><span class="p">);</span>
+
+	<span class="n">PxMat33</span> <span class="n">d</span><span class="p">;</span>
+	<span class="k">for</span><span class="p">(</span><span class="n">PxU32</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">MAX_ITERS</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="n">PxMat33</span> <span class="nf">axes</span><span class="p">(</span><span class="n">q</span><span class="p">);</span>
+		<span class="n">d</span> <span class="o">=</span> <span class="n">axes</span><span class="p">.</span><span class="n">getTranspose</span><span class="p">()</span> <span class="o">*</span> <span class="n">m</span> <span class="o">*</span> <span class="n">axes</span><span class="p">;</span>
+
+		<span class="n">PxReal</span> <span class="n">d0</span> <span class="o">=</span> <span class="n">PxAbs</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="mi">1</span><span class="p">][</span><span class="mi">2</span><span class="p">]),</span> <span class="n">d1</span> <span class="o">=</span> <span class="n">PxAbs</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="mi">2</span><span class="p">]),</span> <span class="n">d2</span> <span class="o">=</span> <span class="n">PxAbs</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="mi">1</span><span class="p">]);</span>
+		<span class="n">PxU32</span> <span class="n">a</span> <span class="o">=</span> <span class="n">PxU32</span><span class="p">(</span><span class="n">d0</span> <span class="o">&gt;</span> <span class="n">d1</span> <span class="o">&amp;&amp;</span> <span class="n">d0</span> <span class="o">&gt;</span> <span class="n">d2</span> <span class="o">?</span> <span class="mi">0</span> <span class="o">:</span> <span class="n">d1</span> <span class="o">&gt;</span> <span class="n">d2</span> <span class="o">?</span> <span class="mi">1</span> <span class="o">:</span> <span class="mi">2</span><span class="p">);</span> <span class="c1">// rotation axis index, from largest off-diagonal
+</span><span class="c1"></span>		<span class="c1">// element
+</span><span class="c1"></span>
+		<span class="n">PxU32</span> <span class="n">a1</span> <span class="o">=</span> <span class="n">shdfnd</span><span class="o">::</span><span class="n">getNextIndex3</span><span class="p">(</span><span class="n">a</span><span class="p">),</span> <span class="n">a2</span> <span class="o">=</span> <span class="n">shdfnd</span><span class="o">::</span><span class="n">getNextIndex3</span><span class="p">(</span><span class="n">a1</span><span class="p">);</span>
+		<span class="k">if</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="n">a1</span><span class="p">][</span><span class="n">a2</span><span class="p">]</span> <span class="o">==</span> <span class="mf">0.0f</span> <span class="o">||</span> <span class="n">PxAbs</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="n">a1</span><span class="p">][</span><span class="n">a1</span><span class="p">]</span> <span class="o">-</span> <span class="n">d</span><span class="p">[</span><span class="n">a2</span><span class="p">][</span><span class="n">a2</span><span class="p">])</span> <span class="o">&gt;</span> <span class="mf">2e6</span><span class="n">f</span> <span class="o">*</span> <span class="n">PxAbs</span><span class="p">(</span><span class="mf">2.0f</span> <span class="o">*</span> <span class="n">d</span><span class="p">[</span><span class="n">a1</span><span class="p">][</span><span class="n">a2</span><span class="p">]))</span>
+			<span class="k">break</span><span class="p">;</span>
+
+		<span class="n">PxReal</span> <span class="n">w</span> <span class="o">=</span> <span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="n">a1</span><span class="p">][</span><span class="n">a1</span><span class="p">]</span> <span class="o">-</span> <span class="n">d</span><span class="p">[</span><span class="n">a2</span><span class="p">][</span><span class="n">a2</span><span class="p">])</span> <span class="o">/</span> <span class="p">(</span><span class="mf">2.0f</span> <span class="o">*</span> <span class="n">d</span><span class="p">[</span><span class="n">a1</span><span class="p">][</span><span class="n">a2</span><span class="p">]);</span> <span class="c1">// cot(2 * phi), where phi is the rotation angle
+</span><span class="c1"></span>		<span class="n">PxReal</span> <span class="n">absw</span> <span class="o">=</span> <span class="n">PxAbs</span><span class="p">(</span><span class="n">w</span><span class="p">);</span>
+
+		<span class="n">PxQuat</span> <span class="n">r</span><span class="p">;</span>
+		<span class="k">if</span><span class="p">(</span><span class="n">absw</span> <span class="o">&gt;</span> <span class="mi">1000</span><span class="p">)</span>
+			<span class="n">r</span> <span class="o">=</span> <span class="n">indexedRotation</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="mi">1</span> <span class="o">/</span> <span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">w</span><span class="p">),</span> <span class="mf">1.f</span><span class="p">);</span> <span class="c1">// h will be very close to 1, so use small angle approx instead
+</span><span class="c1"></span>		<span class="k">else</span>
+		<span class="p">{</span>
+			<span class="n">PxReal</span> <span class="n">t</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="p">(</span><span class="n">absw</span> <span class="o">+</span> <span class="n">PxSqrt</span><span class="p">(</span><span class="n">w</span> <span class="o">*</span> <span class="n">w</span> <span class="o">+</span> <span class="mi">1</span><span class="p">));</span> <span class="c1">// absolute value of tan phi
+</span><span class="c1"></span>			<span class="n">PxReal</span> <span class="n">h</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">PxSqrt</span><span class="p">(</span><span class="n">t</span> <span class="o">*</span> <span class="n">t</span> <span class="o">+</span> <span class="mi">1</span><span class="p">);</span>          <span class="c1">// absolute value of cos phi
+</span><span class="c1"></span>
+			<span class="n">PX_ASSERT</span><span class="p">(</span><span class="n">h</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">);</span> <span class="c1">// |w|&lt;1000 guarantees this with typical IEEE754 machine eps (approx 6e-8)
+</span><span class="c1"></span>			<span class="n">r</span> <span class="o">=</span> <span class="n">indexedRotation</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">PxSqrt</span><span class="p">((</span><span class="mi">1</span> <span class="o">-</span> <span class="n">h</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">PxSign</span><span class="p">(</span><span class="n">w</span><span class="p">),</span> <span class="n">PxSqrt</span><span class="p">((</span><span class="mi">1</span> <span class="o">+</span> <span class="n">h</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span><span class="p">));</span>
+		<span class="p">}</span>
+
+		<span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">q</span> <span class="o">*</span> <span class="n">r</span><span class="p">).</span><span class="n">getNormalized</span><span class="p">();</span>
+	<span class="p">}</span>
+
+	<span class="n">massFrame</span> <span class="o">=</span> <span class="n">q</span><span class="p">;</span>
+	<span class="k">return</span> <span class="nf">PxVec3</span><span class="p">(</span><span class="n">d</span><span class="p">.</span><span class="n">column0</span><span class="p">.</span><span class="n">x</span><span class="p">,</span> <span class="n">d</span><span class="p">.</span><span class="n">column1</span><span class="p">.</span><span class="n">y</span><span class="p">,</span> <span class="n">d</span><span class="p">.</span><span class="n">column2</span><span class="p">.</span><span class="n">z</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3>空气动力函数解析</h3>
+
+<p data-pid="C-SKXi7N">jsbsim的配置文件支持了相当多的函数类型，不过在我们选择的f16配置文件中，aerodynamics节点下的子函数只涉及到了product和table两种类型，解析起来比较简单，可以参考文章第一段中提供的代码。</p>
+
+<p data-pid="DUupoGQo">需要注意我们的程序中使用公制单位存储所有数据，property的标识符“node”最后一部分通常会给出单位，便于转换；但是table表格中的数据未给出单位，同时其也可能不是无量纲数，需要额外处理。在f16的配置文件中，所有的表格都最终都是通过product乘法计算出力/力矩的，尚且可以通过其他变量的单位反推其量纲进行处理。</p>
+
+<p data-pid="2z9_gEIK">对于Property的处理还没有发现特别好的方案，由于jsbsim采用了这种相当于全局变量的架构，要想使用它的配置文件，我们的组件也必然受到这种设计的影响，这种全局变量的优点是直观、程序设计简单，缺点是对外提供接口语义不清晰、Property间如果有依赖关系容易产生隐形bug。</p>
+
+    </div><a class="u-url" href="/unity/2021/05/23/jsbsim-parse.html" hidden></a>
+</article>
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">The Lost Fridge&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">The Lost Fridge&#39;s blog</li><li><a class="u-email" href="mailto:chiefbean@foxmail.com">chiefbean@foxmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/beantowel"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">beantowel</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>The blogs inside the fridge (mostly harmless) lost in the space.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
