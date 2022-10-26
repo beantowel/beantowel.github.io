@@ -12,4 +12,5 @@ bundle install
 
 # serve
 bundle exec jekyll serve
+# gh-pages
 ```
