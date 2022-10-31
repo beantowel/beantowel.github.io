@@ -14,5 +14,5 @@ bundle install
 bundle exec jekyll serve
 # gh-pages
 jekyll build
-cd _site
+echo "" > _site/.nojekyll
 ```
