@@ -13,4 +13,6 @@ bundle install
 # serve
 bundle exec jekyll serve
 # gh-pages
+jekyll build
+cd _site
 ```
