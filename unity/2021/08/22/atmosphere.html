@@ -9,18 +9,18 @@
 <meta property="og:locale" content="en_US" />
 <meta name="description" content="在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\" />
 <meta property="og:description" content="在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\" />
-<link rel="canonical" href="/beantowel.github.io/unity/2021/08/22/atmosphere.html" />
-<meta property="og:url" content="/beantowel.github.io/unity/2021/08/22/atmosphere.html" />
+<link rel="canonical" href="/unity/2021/08/22/atmosphere.html" />
+<meta property="og:url" content="/unity/2021/08/22/atmosphere.html" />
 <meta property="og:site_name" content="The Lost Fridge’s blog" />
 <meta property="og:type" content="article" />
 <meta property="article:published_time" content="2021-08-22T00:34:00+08:00" />
 <script type="application/ld+json">
-{"url":"/beantowel.github.io/unity/2021/08/22/atmosphere.html","@type":"BlogPosting","description":"在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \\frac{-g(h)}{R_{spec}T(h)}dh\\\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \\frac{P_1}{P_0} = \\frac{T_0}{T_0+k \\Delta h}^{\\frac{g_0}{R_{spec} k}}\\\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \\Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \\frac{P_1}{P_0} = e^{\\frac{-g_0 \\Delta h}{R_{spec}T_0}}\\\\","headline":"[jsbsim学习] 标准大气模型","dateModified":"2021-08-22T00:34:00+08:00","datePublished":"2021-08-22T00:34:00+08:00","mainEntityOfPage":{"@type":"WebPage","@id":"/beantowel.github.io/unity/2021/08/22/atmosphere.html"},"@context":"https://schema.org"}</script>
+{"url":"/unity/2021/08/22/atmosphere.html","@type":"BlogPosting","description":"在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \\frac{-g(h)}{R_{spec}T(h)}dh\\\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \\frac{P_1}{P_0} = \\frac{T_0}{T_0+k \\Delta h}^{\\frac{g_0}{R_{spec} k}}\\\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \\Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \\frac{P_1}{P_0} = e^{\\frac{-g_0 \\Delta h}{R_{spec}T_0}}\\\\","headline":"[jsbsim学习] 标准大气模型","dateModified":"2021-08-22T00:34:00+08:00","datePublished":"2021-08-22T00:34:00+08:00","mainEntityOfPage":{"@type":"WebPage","@id":"/unity/2021/08/22/atmosphere.html"},"@context":"https://schema.org"}</script>
 <!-- End Jekyll SEO tag -->
-<link rel="stylesheet" href="/beantowel.github.io/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/beantowel.github.io/feed.xml" title="The Lost Fridge&apos;s blog" /></head>
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="The Lost Fridge&apos;s blog" /></head>
 <body><header class="site-header" role="banner">
 
-  <div class="wrapper"><a class="site-title" rel="author" href="/beantowel.github.io/">The Lost Fridge&#39;s blog</a><nav class="site-nav">
+  <div class="wrapper"><a class="site-title" rel="author" href="/">The Lost Fridge&#39;s blog</a><nav class="site-nav">
         <input type="checkbox" id="nav-trigger" class="nav-trigger" />
         <label for="nav-trigger">
           <span class="menu-icon">
@@ -30,7 +30,7 @@
           </span>
         </label>
 
-        <div class="trigger"><a class="page-link" href="/beantowel.github.io/about/">About</a></div>
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
       </nav></div>
 </header>
 <main class="page-content" aria-label="Content">
@@ -88,11 +88,11 @@
 
 <p></p>
 
-    </div><a class="u-url" href="/beantowel.github.io/unity/2021/08/22/atmosphere.html" hidden></a>
+    </div><a class="u-url" href="/unity/2021/08/22/atmosphere.html" hidden></a>
 </article>
       </div>
     </main><footer class="site-footer h-card">
-  <data class="u-url" href="/beantowel.github.io/"></data>
+  <data class="u-url" href="/"></data>
 
   <div class="wrapper">
 
@@ -104,7 +104,7 @@
           <li class="p-name">The Lost Fridge&#39;s blog</li><li><a class="u-email" href="mailto:chiefbean@foxmail.com">chiefbean@foxmail.com</a></li></ul>
       </div>
 
-      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/beantowel"><svg class="svg-icon"><use xlink:href="/beantowel.github.io/assets/minima-social-icons.svg#github"></use></svg> <span class="username">beantowel</span></a></li></ul>
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/beantowel"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">beantowel</span></a></li></ul>
 </div>
 
       <div class="footer-col footer-col-3">
