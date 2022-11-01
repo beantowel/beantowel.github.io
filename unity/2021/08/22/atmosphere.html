@@ -2,20 +2,22 @@
 <html lang="en"><head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.6.1 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
 <title>[jsbsim学习] 标准大气模型 | The Lost Fridge’s blog</title>
 <meta name="generator" content="Jekyll v4.1.1" />
 <meta property="og:title" content="[jsbsim学习] 标准大气模型" />
 <meta property="og:locale" content="en_US" />
-<meta name="description" content="在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\" />
-<meta property="og:description" content="在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\" />
+<meta name="description" content="在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 $$dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ $$ 在温度随高度线性变化的分段函数上积分，可以进一步简化： $$\frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\$$ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 $$\frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\ $$" />
+<meta property="og:description" content="在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 $$dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ $$ 在温度随高度线性变化的分段函数上积分，可以进一步简化： $$\frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\$$ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 $$\frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\ $$" />
 <link rel="canonical" href="/unity/2021/08/22/atmosphere.html" />
 <meta property="og:url" content="/unity/2021/08/22/atmosphere.html" />
 <meta property="og:site_name" content="The Lost Fridge’s blog" />
 <meta property="og:type" content="article" />
 <meta property="article:published_time" content="2021-08-22T00:34:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="[jsbsim学习] 标准大气模型" />
 <script type="application/ld+json">
-{"url":"/unity/2021/08/22/atmosphere.html","@type":"BlogPosting","description":"在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 dlnP = \\frac{-g(h)}{R_{spec}T(h)}dh\\\\ 在温度随高度线性变化的分段函数上积分，可以进一步简化： \\frac{P_1}{P_0} = \\frac{T_0}{T_0+k \\Delta h}^{\\frac{g_0}{R_{spec} k}}\\\\ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \\Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 \\frac{P_1}{P_0} = e^{\\frac{-g_0 \\Delta h}{R_{spec}T_0}}\\\\","headline":"[jsbsim学习] 标准大气模型","dateModified":"2021-08-22T00:34:00+08:00","datePublished":"2021-08-22T00:34:00+08:00","mainEntityOfPage":{"@type":"WebPage","@id":"/unity/2021/08/22/atmosphere.html"},"@context":"https://schema.org"}</script>
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2021-08-22T00:34:00+08:00","datePublished":"2021-08-22T00:34:00+08:00","description":"在气动力的计算中，需要获知飞行器所在位置的空气密度来计算动压等参数，因此需要大气模型来计算（不同高度的）空气参数。jsbsim中采用了U.S. Standard Atmosphere, 1976&quot;, NASA TM-X-74335 （美国标准大气）模型。 实际应用中不同地区的大气环境不一样（比如海平面温度不同），我们先忽略这个问题，只关注最基本的原理。基本的信息可以在wiki：https://en.wikipedia.org/wiki/International_Standard_Atmosphere里查看。 高度 标准大气模型描述了不同高度上大气参数的变化，这里我们需要了解两种高度的定义：geometric altitude（标准高度）和geopotential altitude（势能高度）。前者很简单，就是物体与海平面间的距离；后者考虑了不同高度上重力加速度g的变化，通过g与高度差的积分计算出了重力不变情况下的等效高度，从名字上也能看出来，物体的势能可以直接用这个高度与地表重力加速度、质量相乘获得。 实际应用中不需要计算复杂的积分，可以通过地球半径来计算势能高度，以下是jsbsim中的实现，只需要普通的四则运算即可 ： 温度、压强、密度 在标准模型中，温度基本是随着高度（分段）线性变化的，所以我们可以方便地将这些数据存在表格里，进行插值计算，而其他两个参数则可以通过求解方程获得。 根据流体静力平衡和理想气体模型，有下面两个公式： 替换变量再化简一下的话就是 $$dlnP = \\frac{-g(h)}{R_{spec}T(h)}dh\\\\ $$ 在温度随高度线性变化的分段函数上积分，可以进一步简化： $$\\frac{P_1}{P_0} = \\frac{T_0}{T_0+k \\Delta h}^{\\frac{g_0}{R_{spec} k}}\\\\$$ 其中k是温度直减率（lapse rate）， P_0 为分段函数转折点压强，与转折点间的（势能高度）差为 \\Delta h 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。 需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为 $$\\frac{P_1}{P_0} = e^{\\frac{-g_0 \\Delta h}{R_{spec}T_0}}\\\\ $$","headline":"[jsbsim学习] 标准大气模型","mainEntityOfPage":{"@type":"WebPage","@id":"/unity/2021/08/22/atmosphere.html"},"url":"/unity/2021/08/22/atmosphere.html"}</script>
 <!-- End Jekyll SEO tag -->
 <link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="The Lost Fridge&apos;s blog" /></head>
 <body><header class="site-header" role="banner">
@@ -35,7 +37,10 @@
 </header>
 <main class="page-content" aria-label="Content">
       <div class="wrapper">
-        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+        <script type="text/javascript"
+    src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+<article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
 
     <header class="post-header">
         <h1 class="post-title p-name" itemprop="name headline">[jsbsim学习] 标准大气模型</h1>
@@ -74,17 +79,17 @@
 <img src="https://pic2.zhimg.com/80/v2-ea45c97c6e3519e2f686721c9f4c8ee1_b.png" data-caption="" data-size="normal" data-rawwidth="140" data-rawheight="26" class="content_image lazy" width="140" data-actualsrc="https://pic2.zhimg.com/v2-ea45c97c6e3519e2f686721c9f4c8ee1_b.png" /></p>
 <p data-pid="6gv1Xdfk">替换变量再化简一下的话就是</p>
 
-<p data-pid="-5dhkXxN"><span class="ztext-math" data-eeimg="1" data-tex="dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\">dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\</span> </p>
+<p data-pid="-5dhkXxN">$$dlnP = \frac{-g(h)}{R_{spec}T(h)}dh\\ $$</p>
 
 <p data-pid="zvj8B3Tg">在温度随高度线性变化的分段函数上积分，可以进一步简化：</p>
 
-<p data-pid="G3vHM5Zy"><span class="ztext-math" data-eeimg="1" data-tex="\frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\">\frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\</span></p>
+<p data-pid="G3vHM5Zy">$$\frac{P_1}{P_0} = \frac{T_0}{T_0+k \Delta h}^{\frac{g_0}{R_{spec} k}}\\$$</p>
 
 <p data-pid="nMWDwGyX">其中k是温度直减率（<i>lapse rate</i>）， <span class="ztext-math" data-eeimg="1" data-tex="P_0">P_0</span> 为分段函数转折点压强，与转折点间的（势能高度）差为 <span class="ztext-math" data-eeimg="1" data-tex="\Delta h">\Delta h</span> 。通过这个公式与预先计算好的各转折点压强，就能获得各高度上的压强，气体密度亦可以再通过理想气体模型获得。</p>
 
 <p data-pid="9x5ygNRm">需要注意的是温度梯度较小的时候上式的k-&gt;0，直接进行数值计算不太合适，需要将上式退化为</p>
 
-<p data-pid="DsdNE0Bk"><span class="ztext-math" data-eeimg="1" data-tex="\frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\">\frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\</span> </p>
+<p data-pid="DsdNE0Bk">$$\frac{P_1}{P_0} = e^{\frac{-g_0 \Delta h}{R_{spec}T_0}}\\ $$</p>
 
 <p></p>
 
