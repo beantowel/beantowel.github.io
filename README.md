@@ -15,6 +15,7 @@ bundle exec jekyll serve
 # gh-pages
 jekyll build
 echo "" > _site/.nojekyll
+cd _site
 
 # local gem
 bundle update jekyll-artisync
