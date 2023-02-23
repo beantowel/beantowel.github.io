@@ -1,4 +1,117 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.1.1">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-11-01T22:51:03+08:00</updated><id>/feed.xml</id><title type="html">The Lost Fridge’s blog</title><subtitle>The blogs inside the fridge (mostly harmless) lost in the space.</subtitle><entry><title type="html">[unity] 实现大地形渲染之 geometry clipmap</title><link href="/unity/2022/03/07/geoclipmap.html" rel="alternate" type="text/html" title="[unity] 实现大地形渲染之 geometry clipmap" /><published>2022-03-07T00:41:00+08:00</published><updated>2022-03-07T00:41:00+08:00</updated><id>/unity/2022/03/07/geoclipmap</id><content type="html" xml:base="/unity/2022/03/07/geoclipmap.html"><![CDATA[<p data-first-child="" data-pid="gz5zWSbi">最近希望在unity中实现一个简单的geometry clipmap，用于飞行模拟游戏中巨大地形的渲染。但是网上冲浪之后发现资料有点少，只好一点点从头做起。那么就用本文记录一些个人比较迷惑的地方，作为我的备忘录和经验分享吧。</p>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.1.1">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2023-02-23T21:48:09+08:00</updated><id>/feed.xml</id><title type="html">The Lost Fridge’s blog</title><subtitle>The blogs inside the fridge (mostly harmless) lost in the space.</subtitle><entry><title type="html">[unity] 预计算大气散射 代码搬运</title><link href="/unity/2023/02/23/atmosphere-scattering.html" rel="alternate" type="text/html" title="[unity] 预计算大气散射 代码搬运" /><published>2023-02-23T21:20:00+08:00</published><updated>2023-02-23T21:20:00+08:00</updated><id>/unity/2023/02/23/atmosphere-scattering</id><content type="html" xml:base="/unity/2023/02/23/atmosphere-scattering.html"><![CDATA[<p data-first-child="" data-pid="SweP55fG">由于unity中默认管线自带的参数化天空盒过于丑陋，而HDRP（好想要它的体积云）似乎还是不推荐在手机上使用，于是我们又得开始自己造轮子了。一番搜索之后，很快我们就找到了本次代码搬运的对象：<a href="https://link.zhihu.com/?target=https%3A//github.com/ebruneton/precomputed_atmospheric_scattering" class=" external" target="_blank" rel="nofollow noreferrer"><span class="invisible">https://</span><span class="visible">github.com/ebruneton/pr</span><span class="invisible">ecomputed_atmospheric_scattering</span><span class="ellipsis"></span></a>，代码还附带了详细的文档以及论文。</p>
+
+<p data-pid="ZYrKVtH7">本文不会详细介绍大气散射计算的原理，而只是记录代码搬运过程的笔记。作者很菜，也是从：<a href="https://link.zhihu.com/?target=https%3A//www.bilibili.com/video/BV1i3411T7QL/%3Fspm_id_from%3D333.788%26vd_source%3Db602aaccc618ea12680b3c2833326cda" class=" wrap external" target="_blank" rel="nofollow noreferrer">06.游戏中地形大气和云的渲染(下) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili</a> 开始了解的，建议在阅读论文前先看视频或者其他zhihu文章了解原理，以读懂原始论文。</p>
+
+<h2 data-into-catalog-status="">一些光学</h2>
+
+<p data-pid="ef-ZQlNg">这里记录一些在阅读代码时碰到疑惑的光学基础知识。</p>
+
+<h3 data-into-catalog-status="">辐射的定义</h3>
+
+<p data-pid="fq4NdI7L">我知道辐射（Radiance）的量纲为：单位面积单位立体角的功率，但是常常忘记它的物理图像：</p>
+
+<p><img src="https://pic3.zhimg.com/80/v2-310ff0fd960ae1781e00caa1cf968906_720w.jpg" data-size="normal" data-rawwidth="1055" data-rawheight="344" class="origin_image zh-lightbox-thumb lazy" width="1055" data-original="https://pic3.zhimg.com/v2-310ff0fd960ae1781e00caa1cf968906_r.jpg" data-actualsrc="https://pic3.zhimg.com/v2-310ff0fd960ae1781e00caa1cf968906_b.jpg" /></p>
+<p data-pid="qVEL8DIb">注意此处的立体角是由“观察者ω”的微表面大小决定的。想象此时接收者远离发射源，则收到的功率以面积率（距离的平方反比）衰减，同时立体角也按此规律衰减，则最终计算出的辐射保持不变，或者说因此才要将这个守恒量定义为辐射。人类视网膜感受到的亮度即与辐射相关，而对于屏幕上的像素来说，我们要计算得到的量正是辐射谱（各种波长下的辐射），最终再转化为RGB值由显示器投射出来。</p>
+
+<p data-pid="HmC78uGJ">如果忽略功率，仅从几何上来定义这“一束光”，则为光学扩展量（étendue）。</p>
+
+<h3 data-into-catalog-status="">Lambertian BRDF的归一化系数</h3>
+
+<p data-pid="Bew0OiV5">一个小问题，很容易误认为均匀反射（Lambertian）表面的辐射与辐照度（irradiance）间的系数通过半球面的立体角（2π）关联起来：</p>
+
+<p><img src="https://pic3.zhimg.com/80/v2-306193fbdfcdc55576d7bfc10da19856_720w.jpg" data-size="normal" data-rawwidth="287" data-rawheight="246" class="content_image lazy" width="287" data-actualsrc="https://pic3.zhimg.com/v2-306193fbdfcdc55576d7bfc10da19856_b.jpg" /></p>
+<p data-pid="QjlZ9OQ0">但是参考<a href="https://link.zhihu.com/?target=https%3A//computergraphics.stackexchange.com/questions/4322/why-normalise-lambertian-brdf-by-1-pi" class=" wrap external" target="_blank" rel="nofollow noreferrer">这个问题</a>，别忘了辐照度的计算需要考虑出/入射光线的角度，乘上系数cos(θ)再进行积分，系数就只剩下π了！</p>
+
+<h3 data-into-catalog-status="">体渲染公式</h3>
+
+<p data-pid="TKJ7zqKu">在介质中的辐射传输有如下图四种散射事件，辐射沿某一方向的微分可以通过各系数加权求得。在计算大气散射的时候，没有自发光（emission），只需要关心衰减（extinction）和内散射（in-scattering）项。注意后两项的辐射L含有下标，需要单独求出，所以in-scattering是最难处理的一项。</p>
+
+<p><img src="https://pic3.zhimg.com/80/v2-72330912d26ccc4a855b381f5600914a_720w.jpg" data-size="normal" data-rawwidth="911" data-rawheight="156" class="origin_image zh-lightbox-thumb lazy" width="911" data-original="https://pic3.zhimg.com/v2-72330912d26ccc4a855b381f5600914a_r.jpg" data-actualsrc="https://pic3.zhimg.com/v2-72330912d26ccc4a855b381f5600914a_b.jpg" /></p>
+<p data-pid="Pecn1mih">in-scattering的辐射量计算需要在散射事件发生的位置x上进行球面积分，其中通过相函数p来描述散射在各种散射夹角下的分布。</p>
+
+<p><img src="https://pic1.zhimg.com/80/v2-7a5dcc43cf5eed213f6eb12a50cc4a40_720w.jpg" data-size="small" data-rawwidth="628" data-rawheight="143" class="origin_image zh-lightbox-thumb lazy" width="628" data-original="https://pic1.zhimg.com/v2-7a5dcc43cf5eed213f6eb12a50cc4a40_r.jpg" data-actualsrc="https://pic1.zhimg.com/v2-7a5dcc43cf5eed213f6eb12a50cc4a40_b.jpg" />
+<img src="https://pic3.zhimg.com/80/v2-08e5989228b9da40affac3daa50e439a_720w.jpg" data-size="normal" data-rawwidth="1512" data-rawheight="620" class="origin_image zh-lightbox-thumb lazy" width="1512" data-original="https://pic3.zhimg.com/v2-08e5989228b9da40affac3daa50e439a_r.jpg" data-actualsrc="https://pic3.zhimg.com/v2-08e5989228b9da40affac3daa50e439a_b.jpg" /></p>
+<h2 data-into-catalog-status="">代码阅读</h2>
+
+<h3 data-into-catalog-status="">量纲一致性</h3>
+
+<p data-pid="zhR1nny9">代码中有个好玩的地方：作者实现了gpu和cpu两种计算方式的算法。其中cpu计算的版本能够通过静态类型检查实现量纲一致性，而代码中的各种物理量都被分配了相应的类型，因此正确性和可读性更好。</p>
+
+<p data-pid="somsN7BU">在C++版本中，基本单位的定义如下：</p>
+
+<div><pre><code class="language-cpp"><span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Angle</span> <span class="n">Angle</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Length</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Wavelength</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">SolidAngle</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Power</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="o">&gt;</span> <span class="n">LuminousPower</span><span class="p">;</span>
+</code></pre></div>
+
+<p data-pid="LT2mrc4z">导出单位则可以通过基本单位组合出来（数值代表了n次幂）：</p>
+
+<div><pre><code class="language-cpp"><span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Area</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;</span><span class="mi">3</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Volume</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;-</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Irradiance</span><span class="p">;</span>
+<span class="k">typedef</span> <span class="n">dimensional</span><span class="o">::</span><span class="n">Scalar</span><span class="o">&lt;-</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="o">&gt;</span> <span class="n">Radiance</span><span class="p">;</span>
+</code></pre></div>
+
+<p data-pid="oP7kXS2v">对于阅读和搬运代码来说，就不用管cpu版本的算法了。在gpu版本中，量纲类型仅起到注释的作用。唯一的缺点就是可能会让强迫症在阅读时总是在纠结量纲的转换和正确性验证。</p>
+
+<h3 data-into-catalog-status="">一点小小的插图欺骗</h3>
+
+<p><img src="https://pic3.zhimg.com/80/v2-f3ff757b613a9abb38f05eaa9fd4444e_720w.jpg" data-size="small" data-rawwidth="631" data-rawheight="295" class="origin_image zh-lightbox-thumb lazy" width="631" data-original="https://pic3.zhimg.com/v2-f3ff757b613a9abb38f05eaa9fd4444e_r.jpg" data-actualsrc="https://pic3.zhimg.com/v2-f3ff757b613a9abb38f05eaa9fd4444e_b.jpg" /></p>
+<p data-pid="YB1r8J3S">在计算一次散射（的辐射量）时，作者给出了多项乘积，包括各种系数、相函数等，但最关键的是他直接使用了太阳的辐照度irradiance作为一项，同时也没有作球面积分！这和我们上文提到的内散射辐射量公式就不一样了呀。实际上此时是被这个图小小的欺骗了一下，我们依然要计算球面积分，只是在地球上太阳的视角非常小，因此只需要在这一小块立体角中进行积分，同时可以将相函数当作一个常数提到积分外，此时积分内只剩下辐射L了，其结果即为太阳（在大气层外）的辐照度。 </p>
+
+<p data-pid="v1ZjxwMB">$$L_i(\mathbf{x} \rightarrow \vec{\omega}) = p(\mathbf{x}, \vec{\omega_{sun}} \rightarrow \vec{\omega}) \int_{\Omega_{sun}}{L(\mathbf{x} \leftarrow \vec{\omega}') d\vec{\omega}'} \\ L_i(\mathbf{x} \rightarrow \vec{\omega}) = p(\mathbf{x}, \vec{\omega_{sun}} \rightarrow \vec{\omega}) Irrad_{sun} $$</p>
+
+<h3 data-into-catalog-status="">古法预处理器</h3>
+
+<p data-pid="CPHbysEq">在具体实现（opengl）中，作者为了避免重复编写vertex/pixel shader，以及在运行时实现类似include的功能，直接采用字符串拼接来生成shader代码的方法。稍微有点接受不能:(</p>
+
+<div><pre><code class="language-cpp"><span class="k">const</span> <span class="kt">char</span> <span class="n">kComputeTransmittanceShader</span><span class="p">[]</span> <span class="o">=</span> <span class="n">R</span><span class="s">"(</span>
+    <span class="n">layout</span><span class="p">(</span><span class="n">location</span> <span class="o">=</span> <span class="mi">0</span><span class="p">)</span> <span class="n">out</span> <span class="n">vec3</span> <span class="n">transmittance</span><span class="p">;</span>
+    <span class="kt">void</span> <span class="nf">main</span><span class="p">()</span> <span class="p">{</span>
+      <span class="n">transmittance</span> <span class="o">=</span> <span class="n">ComputeTransmittanceToTopAtmosphereBoundaryTexture</span><span class="p">(</span>
+          <span class="n">ATMOSPHERE</span><span class="p">,</span> <span class="n">gl_FragCoord</span><span class="p">.</span><span class="n">xy</span><span class="p">);</span>
+    <span class="p">})</span><span class="s">";</span>
+<span class="c1">// ...
+</span><span class="c1"></span><span class="n">Program</span> <span class="nf">compute_transmittance</span><span class="p">(</span>
+        <span class="n">kVertexShader</span><span class="p">,</span> <span class="n">header</span> <span class="o">+</span> <span class="n">kComputeTransmittanceShader</span><span class="p">);</span>
+</code></pre></div>
+
+<h2 data-into-catalog-status="">unity中的实现</h2>
+
+<h3 data-into-catalog-status="">预处理器</h3>
+
+<p data-pid="6FahfWNp">为了代码看起来清晰一点，我直接用include命令来替代字符串拼接，并且给每个查找表/贴图的预计算都单独写了一份shader，虽然内容有点重复。</p>
+
+<p data-pid="lJwAy7kU">由于没有采用古法预处理器的方法拼接代码，所以实现的版本不支持运行时修改大气的参数，不过对于飞行模拟的场景来说也足够了，只会用到对应于地球大气的默认参数。</p>
+
+<h3 data-into-catalog-status="">GLSL转HLSL</h3>
+
+<p data-pid="R-8JHPyl">纯粹因为unity官方文档中HLSL使用较多，所以想把代码转成HLSL。由于作者的代码风格很好，转换过程很简单。不过微软给HLSL写的文档真的有点差：单一函数/功能的注释页面还行，可是语言整体设计的完整文档根本找不到，被OpenGL完爆。</p>
+
+<p data-pid="HvUkCQHk">转换过程中有几个小问题：</p>
+
+<ul>
+<li data-pid="okSk_xLq">const -&gt; static const：怪我没仔细看文档，hlsl里面const只是说在shader不能修改，但也在constant buffers里作为参数，编译时的值是不确定的，需要加上static修饰符才与glsl中的const语义相同。</li>
+<li data-pid="MTxZclD4">没有默认构造函数：自定义的类型是没有构造函数的，只能手动对字段赋值。解决的办法是手写一份构造函数:)，名字加个下划线防止重复定义，还好用的地方不多。</li>
+<li data-pid="-N6N2f5h">缺少部分向量维度隐式转换：这个其实还挺好的，不容易写出隐藏bug，但是修改起来就比较烦人。</li>
+</ul>
+
+<h3 data-into-catalog-status="">天空盒</h3>
+
+<p data-pid="SY1Lzs-a">预计算部分完成后就要进行应用了，最简单的就是将其作为天空盒的材质。好在unity已经内置了天空盒的mesh以及GI的计算，我们只要简单修改一下vertex shader，并将地形遮挡/阴影长度参数直接置为0就可以。</p>
+
+<p data-pid="V4dSqZVu">在Android上运行的时候，还发现了作者一个小<span class="nolink">bug</span>：<a href="https://link.zhihu.com/?target=https%3A//github.com/ebruneton/precomputed_atmospheric_scattering/issues/45" class=" wrap external" target="_blank" rel="nofollow noreferrer">地平线附近颜色不对</a>，最后发现是某处对负数开平方了，不过在PC上很神奇的无事发生。</p>
+
+<p data-pid="QmTYlLX-">对于飞行模拟游戏来说，通常还会使用 <i>浮动原点 </i>技术避免数值精度问题，此时还需要小小地修改一下，将浮动原点的y轴高度也考虑进去，xz轴则无需关心。</p>
+
+<h3 data-into-catalog-status="">成品链接</h3>
+
+<p data-pid="yUhTBjiR">github：<a href="https://link.zhihu.com/?target=https%3A//github.com/beantowel/Aerosol" class=" wrap external" target="_blank" rel="nofollow noreferrer">GitHub - beantowel/Aerosol: Precomputed Atmospheric Scattering for unity</a></p>
+
+<p data-pid="lnREH9Rm">Asset store（免费）：<a href="https://link.zhihu.com/?target=https%3A//assetstore.unity.com/packages/2d/textures-materials/sky/aerosol-244488" class=" wrap external" target="_blank" rel="nofollow noreferrer">Aerosol | 2D Sky | Unity Asset Store</a></p>]]></content><author><name></name></author><category term="unity" /><summary type="html"><![CDATA[由于unity中默认管线自带的参数化天空盒过于丑陋，而HDRP（好想要它的体积云）似乎还是不推荐在手机上使用，于是我们又得开始自己造轮子了。一番搜索之后，很快我们就找到了本次代码搬运的对象：https://github.com/ebruneton/precomputed_atmospheric_scattering，代码还附带了详细的文档以及论文。 本文不会详细介绍大气散射计算的原理，而只是记录代码搬运过程的笔记。作者很菜，也是从：06.游戏中地形大气和云的渲染(下) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili 开始了解的，建议在阅读论文前先看视频或者其他zhihu文章了解原理，以读懂原始论文。 一些光学 这里记录一些在阅读代码时碰到疑惑的光学基础知识。 辐射的定义 我知道辐射（Radiance）的量纲为：单位面积单位立体角的功率，但是常常忘记它的物理图像： 注意此处的立体角是由“观察者ω”的微表面大小决定的。想象此时接收者远离发射源，则收到的功率以面积率（距离的平方反比）衰减，同时立体角也按此规律衰减，则最终计算出的辐射保持不变，或者说因此才要将这个守恒量定义为辐射。人类视网膜感受到的亮度即与辐射相关，而对于屏幕上的像素来说，我们要计算得到的量正是辐射谱（各种波长下的辐射），最终再转化为RGB值由显示器投射出来。 如果忽略功率，仅从几何上来定义这“一束光”，则为光学扩展量（étendue）。 Lambertian BRDF的归一化系数 一个小问题，很容易误认为均匀反射（Lambertian）表面的辐射与辐照度（irradiance）间的系数通过半球面的立体角（2π）关联起来： 但是参考这个问题，别忘了辐照度的计算需要考虑出/入射光线的角度，乘上系数cos(θ)再进行积分，系数就只剩下π了！ 体渲染公式 在介质中的辐射传输有如下图四种散射事件，辐射沿某一方向的微分可以通过各系数加权求得。在计算大气散射的时候，没有自发光（emission），只需要关心衰减（extinction）和内散射（in-scattering）项。注意后两项的辐射L含有下标，需要单独求出，所以in-scattering是最难处理的一项。 in-scattering的辐射量计算需要在散射事件发生的位置x上进行球面积分，其中通过相函数p来描述散射在各种散射夹角下的分布。 代码阅读 量纲一致性 代码中有个好玩的地方：作者实现了gpu和cpu两种计算方式的算法。其中cpu计算的版本能够通过静态类型检查实现量纲一致性，而代码中的各种物理量都被分配了相应的类型，因此正确性和可读性更好。 在C++版本中，基本单位的定义如下： typedef dimensional::Angle Angle; typedef dimensional::Scalar&lt;1, 0, 0, 0, 0&gt; Length; typedef dimensional::Scalar&lt;0, 1, 0, 0, 0&gt; Wavelength; typedef dimensional::Scalar&lt;0, 0, 1, 0, 0&gt; SolidAngle; typedef dimensional::Scalar&lt;0, 0, 0, 1, 0&gt; Power; typedef dimensional::Scalar&lt;0, 0, 0, 0, 1&gt; LuminousPower; 导出单位则可以通过基本单位组合出来（数值代表了n次幂）： typedef dimensional::Scalar&lt;2, 0, 0, 0, 0&gt; Area; typedef dimensional::Scalar&lt;3, 0, 0, 0, 0&gt; Volume; typedef dimensional::Scalar&lt;-2, 0, 0, 1, 0&gt; Irradiance; typedef dimensional::Scalar&lt;-2, 0, -1, 1, 0&gt; Radiance; 对于阅读和搬运代码来说，就不用管cpu版本的算法了。在gpu版本中，量纲类型仅起到注释的作用。唯一的缺点就是可能会让强迫症在阅读时总是在纠结量纲的转换和正确性验证。 一点小小的插图欺骗 在计算一次散射（的辐射量）时，作者给出了多项乘积，包括各种系数、相函数等，但最关键的是他直接使用了太阳的辐照度irradiance作为一项，同时也没有作球面积分！这和我们上文提到的内散射辐射量公式就不一样了呀。实际上此时是被这个图小小的欺骗了一下，我们依然要计算球面积分，只是在地球上太阳的视角非常小，因此只需要在这一小块立体角中进行积分，同时可以将相函数当作一个常数提到积分外，此时积分内只剩下辐射L了，其结果即为太阳（在大气层外）的辐照度。 $$L_i(\mathbf{x} \rightarrow \vec{\omega}) = p(\mathbf{x}, \vec{\omega_{sun}} \rightarrow \vec{\omega}) \int_{\Omega_{sun}}{L(\mathbf{x} \leftarrow \vec{\omega}') d\vec{\omega}'} \\ L_i(\mathbf{x} \rightarrow \vec{\omega}) = p(\mathbf{x}, \vec{\omega_{sun}} \rightarrow \vec{\omega}) Irrad_{sun} $$ 古法预处理器 在具体实现（opengl）中，作者为了避免重复编写vertex/pixel shader，以及在运行时实现类似include的功能，直接采用字符串拼接来生成shader代码的方法。稍微有点接受不能:( const char kComputeTransmittanceShader[] = R"( layout(location = 0) out vec3 transmittance; void main() { transmittance = ComputeTransmittanceToTopAtmosphereBoundaryTexture( ATMOSPHERE, gl_FragCoord.xy); })"; // ... Program compute_transmittance( kVertexShader, header + kComputeTransmittanceShader); unity中的实现 预处理器 为了代码看起来清晰一点，我直接用include命令来替代字符串拼接，并且给每个查找表/贴图的预计算都单独写了一份shader，虽然内容有点重复。 由于没有采用古法预处理器的方法拼接代码，所以实现的版本不支持运行时修改大气的参数，不过对于飞行模拟的场景来说也足够了，只会用到对应于地球大气的默认参数。 GLSL转HLSL 纯粹因为unity官方文档中HLSL使用较多，所以想把代码转成HLSL。由于作者的代码风格很好，转换过程很简单。不过微软给HLSL写的文档真的有点差：单一函数/功能的注释页面还行，可是语言整体设计的完整文档根本找不到，被OpenGL完爆。 转换过程中有几个小问题： const -&gt; static const：怪我没仔细看文档，hlsl里面const只是说在shader不能修改，但也在constant buffers里作为参数，编译时的值是不确定的，需要加上static修饰符才与glsl中的const语义相同。 没有默认构造函数：自定义的类型是没有构造函数的，只能手动对字段赋值。解决的办法是手写一份构造函数:)，名字加个下划线防止重复定义，还好用的地方不多。 缺少部分向量维度隐式转换：这个其实还挺好的，不容易写出隐藏bug，但是修改起来就比较烦人。 天空盒 预计算部分完成后就要进行应用了，最简单的就是将其作为天空盒的材质。好在unity已经内置了天空盒的mesh以及GI的计算，我们只要简单修改一下vertex shader，并将地形遮挡/阴影长度参数直接置为0就可以。 在Android上运行的时候，还发现了作者一个小bug：地平线附近颜色不对，最后发现是某处对负数开平方了，不过在PC上很神奇的无事发生。 对于飞行模拟游戏来说，通常还会使用 浮动原点 技术避免数值精度问题，此时还需要小小地修改一下，将浮动原点的y轴高度也考虑进去，xz轴则无需关心。 成品链接 github：GitHub - beantowel/Aerosol: Precomputed Atmospheric Scattering for unity Asset store（免费）：Aerosol | 2D Sky | Unity Asset Store]]></summary></entry><entry><title type="html">[unity] 实现大地形渲染之 geometry clipmap</title><link href="/unity/2022/03/07/geoclipmap.html" rel="alternate" type="text/html" title="[unity] 实现大地形渲染之 geometry clipmap" /><published>2022-03-07T00:41:00+08:00</published><updated>2022-03-07T00:41:00+08:00</updated><id>/unity/2022/03/07/geoclipmap</id><content type="html" xml:base="/unity/2022/03/07/geoclipmap.html"><![CDATA[<p data-first-child="" data-pid="gz5zWSbi">最近希望在unity中实现一个简单的geometry clipmap，用于飞行模拟游戏中巨大地形的渲染。但是网上冲浪之后发现资料有点少，只好一点点从头做起。那么就用本文记录一些个人比较迷惑的地方，作为我的备忘录和经验分享吧。</p>
 
 <p data-pid="t3Ir7lca">目前没有完全实现，但是看了下效果确实有点差，不加其他功能的话基本用不了。虽然没有做过性能测试，但是感觉很多为了效率做的细节其实没必要完全照着论文去做，有些在unity也不好实现。最近看到了这个视频：<a href="https://link.zhihu.com/?target=https%3A//www.bilibili.com/video/BV1au411y7Fq%3Fspm_id_from%3D333.999.0.0" class=" wrap external" target="_blank" rel="nofollow noreferrer">06.游戏中地形大气和云的渲染(上) | GAMES104-现代游戏引擎：从入门到实践_哔哩哔哩_bilibili</a>，发现geometry clipmap其实最有指导意义的就是：</p>
 
